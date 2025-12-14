@@ -253,19 +253,12 @@ class MessageHandler {
         }
       }
 
-      // Add back button
-      quickReplies.push(
-        {
-          content_type: "text",
-          title: "⬅️ Kembali",
-          payload: "BACK_TO_CATEGORIES",
-        },
-        {
-          content_type: "text",
-          title: "🏠 Menu Utama",
-          payload: "MAIN_MENU",
-        }
-      );
+      // Add navigation button
+      quickReplies.push({
+        content_type: "text",
+        title: "🏠 Menu Utama",
+        payload: "MAIN_MENU",
+      });
 
       console.log(
         `🏷️ Sending ${quickReplies.length} brand quick replies for ${categoryName} (page ${page}/${totalPages})`
@@ -392,24 +385,12 @@ class MessageHandler {
         }
       }
 
-      // Add navigation buttons
-      quickReplies.push(
-        {
-          content_type: "text",
-          title: "⬅️ Pilih Merk Lain",
-          payload: "BACK_TO_BRANDS",
-        },
-        {
-          content_type: "text",
-          title: "📂 Kategori Lain",
-          payload: "BACK_TO_CATEGORIES",
-        },
-        {
-          content_type: "text",
-          title: "🏠 Menu Utama",
-          payload: "MAIN_MENU",
-        }
-      );
+      // Add navigation button
+      quickReplies.push({
+        content_type: "text",
+        title: "🏠 Menu Utama",
+        payload: "MAIN_MENU",
+      });
 
       const message = {
         recipient: { id: senderId },
@@ -641,13 +622,8 @@ class MessageHandler {
               quick_replies: [
                 {
                   content_type: "text",
-                  title: "� Menu Utama",
+                  title: "🏠 Menu Utama",
                   payload: "MAIN_MENU",
-                },
-                {
-                  content_type: "text",
-                  title: "� Kategori Lain",
-                  payload: "BACK_TO_CATEGORIES",
                 },
               ],
             },
