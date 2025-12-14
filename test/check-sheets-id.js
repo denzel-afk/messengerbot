@@ -5,14 +5,14 @@ const fs = require("fs");
 
 async function testGoogleSheetsConnection() {
   try {
-    console.log("🧪 Testing Google Sheets Connection...\n");
+    console.log("Testing Google Sheets Connection...\n");
 
     // Load credentials
     const credentials = JSON.parse(
       fs.readFileSync("./data/credentials.json", "utf8")
     );
-    console.log(`📧 Service Account: ${credentials.client_email}`);
-    console.log(`🆔 Project ID: ${credentials.project_id}`);
+    console.log(`Service Account: ${credentials.client_email}`);
+    console.log(`Project ID: ${credentials.project_id}`);
 
     // Initialize auth
     const serviceAccountAuth = new JWT({
@@ -30,14 +30,14 @@ async function testGoogleSheetsConnection() {
       serviceAccountAuth
     );
 
-    console.log("🔗 Connecting to Google Sheet...");
+    console.log("Connecting to Google Sheet...");
     await doc.loadInfo();
 
-    console.log("✅ Connection successful!");
-    console.log(`📊 Sheet Title: "${doc.title}"`);
-    console.log(`📂 Total Sheets: ${Object.keys(doc.sheetsByTitle).length}`);
+    console.log("Connection successful!");
+    console.log(`Sheet Title: "${doc.title}"`);
+    console.log(`Total Sheets: ${Object.keys(doc.sheetsByTitle).length}`);
     console.log(
-      `📋 Available Sheets: ${Object.keys(doc.sheetsByTitle).join(", ")}`
+      `Available Sheets: ${Object.keys(doc.sheetsByTitle).join(", ")}`
     );
 
     // Test reading data from first sheet
@@ -45,10 +45,10 @@ async function testGoogleSheetsConnection() {
     const firstSheet = doc.sheetsByTitle[firstSheetName];
     const rows = await firstSheet.getRows();
 
-    console.log(`\n📄 First sheet "${firstSheetName}": ${rows.length} rows`);
+    console.log(`\nFirst sheet "${firstSheetName}": ${rows.length} rows`);
 
     if (rows.length > 0) {
-      console.log("📋 Sample data:");
+      console.log("Sample data:");
       const headers = firstSheet.headerValues;
       console.log(`   Headers: ${headers.join(", ")}`);
       console.log(
@@ -58,9 +58,9 @@ async function testGoogleSheetsConnection() {
       );
     }
 
-    console.log("\n🎉 Google Sheets setup complete!");
+    console.log("\nGoogle Sheets setup complete!");
   } catch (error) {
-    console.error("❌ Connection failed:", error.message);
+    console.error("Connection failed:", error.message);
 
     if (error.message.includes("403") || error.message.includes("permission")) {
       console.log(
@@ -70,9 +70,9 @@ async function testGoogleSheetsConnection() {
         `   messengerbot-service@messenger-bot-480215.iam.gserviceaccount.com`
       );
     } else if (error.message.includes("404")) {
-      console.log("\n🔧 Fix: Check your GOOGLE_SHEETS_ID in .env file");
+      console.log("\nFix: Check your GOOGLE_SHEETS_ID in .env file");
     } else if (error.message.includes("API")) {
-      console.log("\n🔧 Fix: Enable Google Sheets API in Google Cloud Console");
+      console.log("\nFix: Enable Google Sheets API in Google Cloud Console");
     }
   }
 }
