@@ -653,3 +653,40 @@ class SheetsService {
 }
 
 module.exports = new SheetsService();
+
+// --- ADD: Get all ban products by ukuran (size) ---
+SheetsService.prototype.getProductsByUkuranBan = async function (ukuran) {
+  try {
+    const products = await this.getProductsByCategory("ban");
+    if (!ukuran || !products) return [];
+    // Normalize: replace - and / with nothing, remove spaces, lowercase
+    const normalize = (s) =>
+      String(s).replace(/[-/]/g, "").replace(/\s+/g, "").toLowerCase();
+    const search = normalize(ukuran);
+    return products.filter((p) => p.ukuran && normalize(p.ukuran) === search);
+  } catch (error) {
+    console.error("Error in getProductsByUkuranBan:", error.message);
+    return [];
+  }
+};
+
+// --- ADD: Get unique tire sizes (ukuran) for Ban ---
+SheetsService.prototype.getUkuranBanList = async function () {
+  try {
+    const sheet = this.doc.sheetsByTitle["Sheet_Ban"];
+    if (!sheet) {
+      console.error("Sheet_Ban not found");
+      return [];
+    }
+    const rows = await sheet.getRows();
+    const columnMap = this.columnMappings["Sheet_Ban"];
+    const sizes = rows
+      .map((row) => this.getCellValue(row, columnMap.ukuran))
+      .filter((ukuran) => ukuran && ukuran.trim() !== "");
+    // Unique and sorted
+    return [...new Set(sizes)].sort();
+  } catch (error) {
+    console.error("Error in getUkuranBanList:", error.message);
+    return [];
+  }
+};
