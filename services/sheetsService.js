@@ -41,7 +41,7 @@ class SheetsService {
         image: ["GAMBAR", "FOTO"],
       },
       Sheet_Lampu: {
-        product_name: ["NAMA PRODUK", "PRODUCT"],
+        product_name: ["NAMA PRODUK", "PRODUCT", "NAME"],
         brand: ["MERK", "BRAND"],
         type: ["JENIS", "TYPE", "TIPE"],
         watt: ["WATT", "DAYA"],
@@ -51,18 +51,19 @@ class SheetsService {
         price_list: ["PRICE LIST"],
         image: ["GAMBAR", "FOTO"],
       },
+      // CAT: only 3 columns (NAMA, MERK, JUAL)
       Sheet_Cat: {
-        product_name: ["NAMA PRODUK", "PRODUCT"],
+        product_name: ["NAMA", "NAMA PRODUK", "PRODUCT", "NAME"],
         brand: ["MERK", "BRAND"],
-        color: ["WARNA", "COLOR"],
-        type: ["JENIS", "TYPE"],
-        size: ["UKURAN", "SIZE"],
-        volume: ["VOLUME", "ISI"],
-        harga_jual: ["HARGA JUAL", "HARGA"],
-        price_list: ["PRICE LIST"],
-        image: ["GAMBAR", "FOTO"],
+        harga_jual: ["JUAL", "HARGA JUAL", "HARGA"],
       },
     };
+  }
+
+  // Optional: auto-init guard if you ever forget to call initialize()
+  async ensureConnected() {
+    if (this.connected && this.doc) return;
+    await this.initialize();
   }
 
   async initialize() {
@@ -92,6 +93,7 @@ class SheetsService {
       return true;
     } catch (error) {
       console.error("Sheets initialization failed:", error.message);
+      this.connected = false;
       throw error;
     }
   }
@@ -113,8 +115,10 @@ class SheetsService {
 
   async getProductsByCategory(categoryName) {
     try {
+      await this.ensureConnected();
+
       const sheetEntry = Object.entries(this.categoryMap).find(
-        ([sheetName, info]) => info.name === categoryName.toLowerCase()
+        ([, info]) => info.name === String(categoryName || "").toLowerCase()
       );
 
       if (!sheetEntry) {
@@ -123,7 +127,7 @@ class SheetsService {
       }
 
       const [sheetName] = sheetEntry;
-      const sheet = this.doc.sheetsByTitle[sheetName];
+      const sheet = this.doc?.sheetsByTitle?.[sheetName];
 
       if (!sheet) {
         console.log(`Sheet "${sheetName}" not found`);
@@ -140,7 +144,6 @@ class SheetsService {
     }
   }
 
-  // Parse products based on sheet type
   parseProductsBySheetType(rows, categoryName, sheetName) {
     const columnMap = this.columnMappings[sheetName];
 
@@ -179,36 +182,38 @@ class SheetsService {
           return null;
         }
       })
-      .filter((product) => product !== null);
+      .filter(Boolean);
   }
 
-  // Get unique brands/merk from a category
+  parseGenericProducts(rows, categoryName) {
+    return rows
+      .map((row, idx) => this.parseGenericProduct(row, idx, categoryName))
+      .filter(Boolean);
+  }
+
   async getBrandsByCategory(categoryName) {
     try {
       console.log(`🏷️ Getting brands for category: ${categoryName}`);
-
       const products = await this.getProductsByCategory(categoryName);
       console.log(`📦 Found ${products.length} products in ${categoryName}`);
 
-      // Extract unique brands
       const brands = [
         ...new Set(
           products
-            .map((product) => product.brand)
-            .filter((brand) => brand && brand.trim() !== "")
+            .map((p) => p.brand)
+            .filter((b) => b && String(b).trim() !== "")
+            .map((b) => String(b).trim())
         ),
       ];
 
       console.log(`🏷️ Found ${brands.length} unique brands:`, brands);
-
-      return brands.sort(); // Sort alphabetically
+      return brands.sort();
     } catch (error) {
       console.error(`Error getting brands for ${categoryName}:`, error.message);
       return [];
     }
   }
 
-  // Get products by category and brand
   async getProductsByBrand(categoryName, brandName) {
     try {
       console.log(
@@ -216,16 +221,15 @@ class SheetsService {
       );
 
       const products = await this.getProductsByCategory(categoryName);
+      const target = String(brandName || "").toLowerCase();
+
       const brandProducts = products.filter(
-        (product) =>
-          product.brand &&
-          product.brand.toLowerCase() === brandName.toLowerCase()
+        (p) => p.brand && String(p.brand).toLowerCase() === target
       );
 
       console.log(
         `📦 Found ${brandProducts.length} products for brand "${brandName}"`
       );
-
       return brandProducts;
     } catch (error) {
       console.error(
@@ -250,7 +254,7 @@ class SheetsService {
       id: `${categoryName}_${index + 1}`,
       category: categoryName,
       name: `${merk} ${ukuran}`,
-      ukuran: ukuran,
+      ukuran,
       brand: merk,
       pattern: pattern || "",
       harga_jual: hargaJual,
@@ -259,12 +263,10 @@ class SheetsService {
       image_url: this.convertGoogleDriveUrl(gambar),
       is_available: true,
       row_index: index + 2,
-      // Ban-specific fields
-      specifications: `${ukuran} - ${pattern}`,
+      specifications: `${ukuran}${pattern ? " - " + pattern : ""}`,
     };
   }
 
-  // Oli-specific parser
   parseOliProduct(row, index, categoryName, columnMap) {
     const productName = this.getCellValue(row, columnMap.product_name);
     const brand = this.getCellValue(row, columnMap.brand);
@@ -279,22 +281,20 @@ class SheetsService {
     return {
       id: `${categoryName}_${index + 1}`,
       category: categoryName,
-      name: productName || `${brand} ${type}`,
-      brand: brand,
-      type: type,
-      viscosity: viscosity,
-      volume: volume,
+      name: productName || `${brand} ${type || ""}`.trim(),
+      brand,
+      type,
+      viscosity,
+      volume,
       harga_jual: hargaJual,
       base_price: hargaJual,
       image_url: this.convertGoogleDriveUrl(gambar),
       is_available: true,
       row_index: index + 2,
-      // Oli-specific fields
-      specifications: `${viscosity} - ${volume}`,
+      specifications: [viscosity, volume].filter(Boolean).join(" - "),
     };
   }
 
-  // Lampu-specific parser
   parseLampuProduct(row, index, categoryName, columnMap) {
     const productName = this.getCellValue(row, columnMap.product_name);
     const brand = this.getCellValue(row, columnMap.brand);
@@ -310,62 +310,59 @@ class SheetsService {
     return {
       id: `${categoryName}_${index + 1}`,
       category: categoryName,
-      name: productName || `${brand} ${type}`,
-      brand: brand,
-      type: type,
-      watt: watt,
-      voltage: voltage,
-      fitting: fitting,
+      name: productName || `${brand} ${type || ""}`.trim(),
+      brand,
+      type,
+      watt,
+      voltage,
+      fitting,
       harga_jual: hargaJual,
       base_price: hargaJual,
       image_url: this.convertGoogleDriveUrl(gambar),
       is_available: true,
       row_index: index + 2,
-      // Lampu-specific fields
-      specifications: `${watt}W - ${voltage}V - ${fitting}`,
+      specifications: [
+        watt ? `${watt}W` : "",
+        voltage ? `${voltage}V` : "",
+        fitting,
+      ]
+        .filter(Boolean)
+        .join(" - "),
     };
   }
 
-  // Cat-specific parser
+  // CAT: only NAMA, MERK, JUAL (no image from sheet)
   parseCatProduct(row, index, categoryName, columnMap) {
     const productName = this.getCellValue(row, columnMap.product_name);
     const brand = this.getCellValue(row, columnMap.brand);
-    const color = this.getCellValue(row, columnMap.color);
-    const type = this.getCellValue(row, columnMap.type);
-    const volume = this.getCellValue(row, columnMap.volume);
     const hargaJual = this.getNumericValue(row, columnMap.harga_jual);
-    const gambar = this.getCellValue(row, columnMap.image);
 
     if (!productName && !brand) return null;
 
     return {
       id: `${categoryName}_${index + 1}`,
       category: categoryName,
-      name: productName || `${brand} ${color}`,
-      brand: brand,
-      color: color,
-      type: type,
-      volume: volume,
+      name: productName || `${brand} Cat`.trim(),
+      brand,
       harga_jual: hargaJual,
       base_price: hargaJual,
-      image_url: this.convertGoogleDriveUrl(gambar),
+      image_url: "", // image handled elsewhere (internet / fallback)
       is_available: true,
       row_index: index + 2,
-      // Cat-specific fields
-      specifications: `${color} - ${type} - ${volume}`,
+      specifications: `${productName || ""} ${brand || ""}`.trim(),
     };
   }
 
-  // Generic parser for unknown sheet types
   parseGenericProduct(row, index, categoryName) {
     const possibleNameColumns = [
       "NAMA PRODUK",
       "PRODUCT",
       "NAME",
+      "NAMA",
       "MERK",
       "BRAND",
     ];
-    const possiblePriceColumns = ["HARGA JUAL", "HARGA", "PRICE"];
+    const possiblePriceColumns = ["HARGA JUAL", "HARGA", "PRICE", "JUAL"];
     const possibleImageColumns = ["GAMBAR", "FOTO", "IMAGE"];
 
     const name = this.getCellValue(row, possibleNameColumns);
@@ -377,7 +374,7 @@ class SheetsService {
     return {
       id: `${categoryName}_${index + 1}`,
       category: categoryName,
-      name: name,
+      name,
       harga_jual: price,
       base_price: price,
       image_url: this.convertGoogleDriveUrl(image),
@@ -388,13 +385,18 @@ class SheetsService {
   }
 
   getCellValue(row, keys) {
-    for (const key of keys) {
+    const arr = Array.isArray(keys) ? keys : [keys];
+    for (const key of arr) {
       try {
         const value = row.get(key);
-        if (value && value.toString().trim() !== "") {
-          return value.toString().trim();
+        if (
+          value !== undefined &&
+          value !== null &&
+          String(value).trim() !== ""
+        ) {
+          return String(value).trim();
         }
-      } catch (error) {
+      } catch (e) {
         continue;
       }
     }
@@ -404,30 +406,25 @@ class SheetsService {
   getNumericValue(row, keys) {
     const value = this.getCellValue(row, keys);
     if (!value) return 0;
-    return parseInt(value.replace(/[^\d]/g, "")) || 0;
+    return parseInt(String(value).replace(/[^\d]/g, "")) || 0;
   }
 
   convertGoogleDriveUrl(url) {
     if (!url || typeof url !== "string") return "";
 
-    // Already direct non-drive url
     if (url.startsWith("http") && !url.includes("drive.google.com")) return url;
-
     if (!url.includes("drive.google.com")) return "";
 
     let fileId = null;
 
-    // /file/d/<id>/
     let m = url.match(/\/d\/([a-zA-Z0-9-_]+)/);
     if (m) fileId = m[1];
 
-    // open?id=<id>
     if (!fileId) {
       m = url.match(/[?&]id=([a-zA-Z0-9-_]+)/);
       if (m) fileId = m[1];
     }
 
-    // uc?id=<id>
     if (!fileId && url.includes("/uc?")) {
       m = url.match(/[?&]id=([a-zA-Z0-9-_]+)/);
       if (m) fileId = m[1];
@@ -435,15 +432,13 @@ class SheetsService {
 
     if (!fileId) return "";
 
-    // ✅ BEST for Messenger hotlink:
     return `https://lh3.googleusercontent.com/d/${fileId}=w1200`;
   }
 
-  // ... rest of the methods remain the same (createOrder, saveCustomerInfo, etc.)
-  // [Keep all the existing order management methods unchanged]
-
+  // ===== Orders =====
   async createOrder(orderData) {
     try {
+      await this.ensureConnected();
       console.log("📝 Creating order:", orderData);
 
       const salesSheet = this.doc.sheetsByTitle["Sheet_Penjualan"];
@@ -451,23 +446,17 @@ class SheetsService {
         const availableSheets = Object.keys(this.doc.sheetsByTitle).join(", ");
         console.error(`❌ Sheet_Penjualan not found!`);
         console.error(`📋 Available sheets: ${availableSheets}`);
-        console.error(`\n🔧 QUICK FIX:`);
-        console.error(
-          `   1. Open: https://docs.google.com/spreadsheets/d/${this.sheetsId}/edit`
-        );
-        console.error(`   2. Click "+" to add new sheet`);
-        console.error(`   3. Rename to: Sheet_Penjualan`);
-        console.error(
-          `   4. Add headers: ORDER_ID | TANGGAL | WAKTU | CUSTOMER_NAME | CUSTOMER_PHONE | MESSENGER_ID | PRODUCT_NAME | KATEGORI | SPECIFICATIONS | QUANTITY | HARGA_SATUAN | HARGA_PASANG | TOTAL_HARGA | STATUS | NOTES | PAYMENT_STATUS | UPDATED_AT`
-        );
-
         throw new Error(
-          "Sheet_Penjualan not found! Please create it manually. See console for instructions."
+          "Sheet_Penjualan not found! Please create it manually."
         );
       }
 
       const orderId = `ORD_${Date.now()}`;
       const currentDate = new Date();
+
+      const qty = orderData.quantity || 1;
+      const price = orderData.price || 0;
+      const pasang = orderData.harga_pasang || 0;
 
       const orderRow = {
         ORDER_ID: orderId,
@@ -479,12 +468,10 @@ class SheetsService {
         PRODUCT_NAME: orderData.product_name,
         KATEGORI: orderData.category,
         SPECIFICATIONS: orderData.specifications || "",
-        QUANTITY: orderData.quantity || 1,
-        HARGA_SATUAN: orderData.price || 0,
-        HARGA_PASANG: orderData.harga_pasang * 1000 - orderData.price || 0,
-        TOTAL_HARGA:
-          (orderData.quantity || 1) * (orderData.price || 0) +
-          (orderData.harga_pasang || 0),
+        QUANTITY: qty,
+        HARGA_SATUAN: price,
+        HARGA_PASANG: pasang,
+        TOTAL_HARGA: qty * price + pasang,
         STATUS: "PENDING",
         NOTES: orderData.notes || "",
         PAYMENT_STATUS: "UNPAID",
@@ -501,10 +488,7 @@ class SheetsService {
       };
     } catch (error) {
       console.error("Error creating order:", error.message);
-      return {
-        success: false,
-        error: error.message,
-      };
+      return { success: false, error: error.message };
     }
   }
 
@@ -521,31 +505,26 @@ class SheetsService {
       }
     }
 
-    const searchLower = searchTerm.toLowerCase();
+    const searchLower = String(searchTerm || "").toLowerCase();
     return allProducts.filter(
       (product) =>
-        product.name.toLowerCase().includes(searchLower) ||
-        (product.brand && product.brand.toLowerCase().includes(searchLower)) ||
-        (product.ukuran &&
-          product.ukuran.toLowerCase().includes(searchLower)) ||
-        (product.type && product.type.toLowerCase().includes(searchLower)) ||
-        (product.color && product.color.toLowerCase().includes(searchLower))
+        product.name?.toLowerCase().includes(searchLower) ||
+        product.brand?.toLowerCase().includes(searchLower) ||
+        product.ukuran?.toLowerCase().includes(searchLower) ||
+        product.type?.toLowerCase().includes(searchLower) ||
+        product.color?.toLowerCase().includes(searchLower)
     );
   }
 
   async updateOrderStatus(orderId, newStatus) {
     try {
+      await this.ensureConnected();
       const salesSheet = this.doc.sheetsByTitle["Sheet_Penjualan"];
-      if (!salesSheet) {
-        throw new Error("Sheet_Penjualan not found");
-      }
+      if (!salesSheet) throw new Error("Sheet_Penjualan not found");
 
       const rows = await salesSheet.getRows();
       const orderRow = rows.find((row) => row.get("ORDER_ID") === orderId);
-
-      if (!orderRow) {
-        throw new Error(`Order ${orderId} not found`);
-      }
+      if (!orderRow) throw new Error(`Order ${orderId} not found`);
 
       orderRow.set("STATUS", newStatus);
       orderRow.set("UPDATED_AT", new Date().toLocaleString("id-ID"));
@@ -561,16 +540,15 @@ class SheetsService {
 
   async getOrderById(orderId) {
     try {
+      await this.ensureConnected();
       const salesSheet = this.doc.sheetsByTitle["Sheet_Penjualan"];
       if (!salesSheet)
         return { success: false, error: "Sheet_Penjualan not found" };
 
       const rows = await salesSheet.getRows();
       const orderRow = rows.find((row) => row.get("ORDER_ID") === orderId);
-
-      if (!orderRow) {
+      if (!orderRow)
         return { success: false, error: `Order ${orderId} not found` };
-      }
 
       return {
         success: true,
@@ -591,10 +569,10 @@ class SheetsService {
 
   async getSalesReport(limit = 10) {
     try {
+      await this.ensureConnected();
       const salesSheet = this.doc.sheetsByTitle["Sheet_Penjualan"];
-      if (!salesSheet) {
+      if (!salesSheet)
         return { success: false, error: "Sheet_Penjualan not found" };
-      }
 
       const rows = await salesSheet.getRows();
 
@@ -632,8 +610,11 @@ class SheetsService {
 
   async getProductById(productId) {
     try {
-      const [categoryName, indexStr] = productId.split("_");
-      const index = parseInt(indexStr) - 1;
+      // safer split: allow category names with underscores
+      const parts = String(productId || "").split("_");
+      const indexStr = parts.pop();
+      const categoryName = parts.join("_");
+      const index = parseInt(indexStr, 10) - 1;
 
       const products = await this.getProductsByCategory(categoryName);
 
@@ -641,10 +622,7 @@ class SheetsService {
         return { success: false, error: `Product ${productId} not found` };
       }
 
-      return {
-        success: true,
-        product: products[index],
-      };
+      return { success: true, product: products[index] };
     } catch (error) {
       console.error("Error getting product by ID:", error.message);
       return { success: false, error: error.message };
@@ -652,14 +630,28 @@ class SheetsService {
   }
 }
 
-module.exports = new SheetsService();
+const sheetsService = new SheetsService();
+module.exports = sheetsService;
 
-// --- ADD: Get all ban products by ukuran (size) ---
+// ===========================
+// Prototype extensions
+// ===========================
+
+// Get all cat products
+SheetsService.prototype.getCatProducts = async function () {
+  try {
+    return await this.getProductsByCategory("cat");
+  } catch (error) {
+    console.error("Error in getCatProducts:", error.message);
+    return [];
+  }
+};
+
+// Get all ban products by ukuran (size)
 SheetsService.prototype.getProductsByUkuranBan = async function (ukuran) {
   try {
     const products = await this.getProductsByCategory("ban");
     if (!ukuran || !products) return [];
-    // Normalize: replace - and / with nothing, remove spaces, lowercase
     const normalize = (s) =>
       String(s).replace(/[-/]/g, "").replace(/\s+/g, "").toLowerCase();
     const search = normalize(ukuran);
@@ -670,10 +662,11 @@ SheetsService.prototype.getProductsByUkuranBan = async function (ukuran) {
   }
 };
 
-// --- ADD: Get unique tire sizes (ukuran) for Ban ---
+// Get unique tire sizes (ukuran) for Ban
 SheetsService.prototype.getUkuranBanList = async function () {
   try {
-    const sheet = this.doc.sheetsByTitle["Sheet_Ban"];
+    await this.ensureConnected();
+    const sheet = this.doc?.sheetsByTitle?.["Sheet_Ban"];
     if (!sheet) {
       console.error("Sheet_Ban not found");
       return [];
@@ -682,8 +675,7 @@ SheetsService.prototype.getUkuranBanList = async function () {
     const columnMap = this.columnMappings["Sheet_Ban"];
     const sizes = rows
       .map((row) => this.getCellValue(row, columnMap.ukuran))
-      .filter((ukuran) => ukuran && ukuran.trim() !== "");
-    // Unique and sorted
+      .filter((u) => u && u.trim() !== "");
     return [...new Set(sizes)].sort();
   } catch (error) {
     console.error("Error in getUkuranBanList:", error.message);
