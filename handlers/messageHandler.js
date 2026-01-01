@@ -108,6 +108,12 @@ class MessageHandler {
       return;
     }
 
+    // ✅ OLI: start PACK flow
+    if (textLower === "oli") {
+      await this.sendPackOliMenu(senderId, 1, session);
+      return;
+    }
+
     // CAT: allow direct typing "cat"
     if (textLower === "cat") {
       session.state = "cat_ask_color";
@@ -323,6 +329,49 @@ class MessageHandler {
       return;
     }
 
+    // =========================
+    // ✅ OLI: PACK FLOW
+    // =========================
+
+    // paginate pack list
+    if (payload.startsWith("PACK_OLI_PAGE_")) {
+      const page = parseInt(payload.replace("PACK_OLI_PAGE_", ""), 10) || 1;
+      await this.sendPackOliMenu(senderId, page, session);
+      return;
+    }
+
+    // select pack
+    if (payload.startsWith("PACK_OLI_")) {
+      const encoded = payload.replace("PACK_OLI_", "");
+      const pack = this.decodeTextPayload(encoded);
+
+      session.oliPack = pack;
+      session.state = "oli_show_pack";
+      await this.sendOliByPack(senderId, session, pack, 1);
+      return;
+    }
+
+    // paginate products by pack
+    if (payload.startsWith("OLI_PACK_PAGE_")) {
+      // Format: OLI_PACK_PAGE_<b64Pack>_<page>
+      const rest = payload.replace("OLI_PACK_PAGE_", "");
+      const parts = rest.split("_");
+      const page = parseInt(parts[parts.length - 1], 10) || 1;
+      const b64Pack = parts.slice(0, -1).join("_");
+      const pack = this.decodeTextPayload(b64Pack);
+
+      session.oliPack = pack;
+      session.state = "oli_show_pack";
+      await this.sendOliByPack(senderId, session, pack, page);
+      return;
+    }
+
+    // back to pack list
+    if (payload === "OLI_PILIH_PACK") {
+      await this.sendPackOliMenu(senderId, 1, session);
+      return;
+    }
+
     // ---------- CATEGORY ----------
     if (payload.startsWith("CATEGORY_")) {
       const category = payload.replace("CATEGORY_", "").toLowerCase();
@@ -341,6 +390,12 @@ class MessageHandler {
       // ✅ BAN SPECIAL
       if (category === "ban") {
         await this.sendUkuranBanMenu(senderId, 1, session);
+        return;
+      }
+
+      // ✅ OLI SPECIAL: ask PACK first (NO brand menu)
+      if (category === "oli") {
+        await this.sendPackOliMenu(senderId, 1, session);
         return;
       }
 
@@ -458,6 +513,12 @@ class MessageHandler {
       // ✅ BAN SPECIAL
       if (category === "ban") {
         await this.sendUkuranBanMenu(senderId, 1, session);
+        return;
+      }
+
+      // ✅ OLI SPECIAL
+      if (category === "oli") {
+        await this.sendPackOliMenu(senderId, 1, session);
         return;
       }
 
@@ -593,6 +654,61 @@ class MessageHandler {
   }
 
   // =========================
+  // ✅ OLI: PACK MENU (PAGINATED)
+  // =========================
+  async sendPackOliMenu(senderId, page = 1, session) {
+    const packList = (await sheetsService.getPackOliList()) || [];
+    const perPage = 10;
+    const totalPages = Math.max(1, Math.ceil(packList.length / perPage));
+    const safePage = Math.min(Math.max(page, 1), totalPages);
+
+    const start = (safePage - 1) * perPage;
+    const show = packList.slice(start, start + perPage);
+
+    const quickReplies = [];
+
+    if (safePage > 1) {
+      quickReplies.push({
+        content_type: "text",
+        title: "⬅️ Prev",
+        payload: `PACK_OLI_PAGE_${safePage - 1}`,
+      });
+    }
+
+    show.forEach((p) => {
+      const label = String(p).length ? `${p}L` : String(p);
+      quickReplies.push({
+        content_type: "text",
+        title: label.slice(0, 20),
+        payload: `PACK_OLI_${this.encodeTextPayload(p)}`,
+      });
+    });
+
+    if (safePage < totalPages) {
+      quickReplies.push({
+        content_type: "text",
+        title: "Next ➡️",
+        payload: `PACK_OLI_PAGE_${safePage + 1}`,
+      });
+    }
+
+    quickReplies.push({
+      content_type: "text",
+      title: "🏠 Menu Utama",
+      payload: "MAIN_MENU",
+    });
+
+    await this.sendTextMessage(
+      senderId,
+      `🛢️ Pilih **PACK** oli yang dicari:` +
+        (totalPages > 1 ? `\nHalaman ${safePage} dari ${totalPages}` : ""),
+      quickReplies.slice(0, 13)
+    );
+
+    session.state = "oli_choose_pack";
+  }
+
+  // =========================
   // ✅ LAMPU: SHOW PRODUCTS BY TYPE (PAGINATED)
   // =========================
   async sendLampuByType(senderId, session, typeLampu, page = 1) {
@@ -697,6 +813,114 @@ class MessageHandler {
       await this.sendTextMessage(
         senderId,
         "Maaf, error saat ambil lampu berdasarkan TYPE 😅"
+      );
+    }
+  }
+
+  // =========================
+  // ✅ OLI: SHOW PRODUCTS BY PACK (PAGINATED)
+  // =========================
+  async sendOliByPack(senderId, session, pack, page = 1) {
+    try {
+      await this.sendTypingOn(senderId);
+
+      const products = (await sheetsService.getProductsByPackOli(pack)) || [];
+      if (!products.length) {
+        await this.sendTextMessage(
+          senderId,
+          `Maaf, belum ada oli untuk PACK **${pack}** 😅\n\nPilih pack lain ya.`,
+          [
+            {
+              content_type: "text",
+              title: "📂 Pack Lain",
+              payload: "OLI_PILIH_PACK",
+            },
+            {
+              content_type: "text",
+              title: "🏠 Menu Utama",
+              payload: "MAIN_MENU",
+            },
+          ]
+        );
+        return;
+      }
+
+      const maxPerPage = 10;
+      const totalPages = Math.max(1, Math.ceil(products.length / maxPerPage));
+      const safePage = Math.min(Math.max(page, 1), totalPages);
+
+      const startIndex = (safePage - 1) * maxPerPage;
+      const show = products.slice(startIndex, startIndex + maxPerPage);
+
+      const elements = show.map((p, i) => {
+        const globalIndex = startIndex + i;
+        const productId = `OLI_PACK_${this.encodeTextPayload(
+          pack
+        )}_${globalIndex}`;
+
+        return {
+          title: String(p.name || "").slice(0, 80),
+          subtitle: this.formatProductSubtitle(p),
+          image_url:
+            this.normalizeImageUrl(p.image_url) ||
+            this.getDefaultProductImage("oli"),
+          buttons: [
+            {
+              type: "postback",
+              title: "🛒 Tertarik",
+              payload: `ORDER_${productId}`,
+            },
+          ],
+        };
+      });
+
+      await this.sendCarousel(senderId, elements);
+
+      const b64Pack = this.encodeTextPayload(pack);
+      const quickReplies = [];
+
+      if (totalPages > 1 && safePage > 1) {
+        quickReplies.push({
+          content_type: "text",
+          title: "⬅️ Prev",
+          payload: `OLI_PACK_PAGE_${b64Pack}_${safePage - 1}`,
+        });
+      }
+      if (totalPages > 1 && safePage < totalPages) {
+        quickReplies.push({
+          content_type: "text",
+          title: "Next ➡️",
+          payload: `OLI_PACK_PAGE_${b64Pack}_${safePage + 1}`,
+        });
+      }
+
+      quickReplies.push(
+        {
+          content_type: "text",
+          title: "📂 Pack Lain",
+          payload: "OLI_PILIH_PACK",
+        },
+        { content_type: "text", title: "🏠 Menu Utama", payload: "MAIN_MENU" }
+      );
+
+      await this.sendTextMessage(
+        senderId,
+        `🛢️ **Oli PACK ${pack}**\n` +
+          `📦 Menampilkan ${show.length} dari ${products.length}` +
+          (totalPages > 1
+            ? `\n📄 Halaman ${safePage} dari ${totalPages}`
+            : "") +
+          `\n\nKlik "Tertarik" untuk simpan pilihan. Ketik "selesai" untuk ringkasan.`,
+        quickReplies.slice(0, 13)
+      );
+
+      session.state = "oli_show_pack";
+      session.oliPack = pack;
+    } catch (e) {
+      console.error("❌ sendOliByPack error:", e?.message || e);
+      await this.sendTextMessage(
+        senderId,
+        "Maaf, error saat ambil oli berdasarkan PACK 😅"
       );
     }
   }
@@ -1026,6 +1250,45 @@ class MessageHandler {
       return;
     }
 
+    // ✅ OLI_PACK_<b64Pack>_<index>
+    if (String(productId).startsWith("OLI_PACK_")) {
+      const parts = String(productId).split("_");
+      const b64Pack = parts[2];
+      const idx = parseInt(parts[3], 10);
+      const pack = this.decodeTextPayload(b64Pack);
+
+      const products = await sheetsService.getProductsByPackOli(pack);
+      if (products && products[idx]) product = products[idx];
+
+      if (!product) {
+        await this.sendTextMessage(senderId, "❌ Produk oli tidak ditemukan.");
+        return;
+      }
+
+      if (!session.selectedProducts) session.selectedProducts = [];
+      session.selectedProducts.push(product);
+
+      await this.sendTextMessage(
+        senderId,
+        `✅ Ditambahkan: ${product.name} (${
+          product.brand || "-"
+        })\n\nMau tambah lagi? Pilih pack lain atau ketik "selesai".`,
+        [
+          {
+            content_type: "text",
+            title: "📂 Pack Lain",
+            payload: "OLI_PILIH_PACK",
+          },
+          {
+            content_type: "text",
+            title: "🏠 Menu Utama",
+            payload: "MAIN_MENU",
+          },
+        ]
+      );
+      return;
+    }
+
     // ✅ CAT_<id>
     if (String(productId).startsWith("CAT_")) {
       const id = String(productId).replace("CAT_", "");
@@ -1188,7 +1451,8 @@ class MessageHandler {
       banUkuran: null,
       banMotorQuery: null,
       banPosisi: null,
-      lampuType: null, // ✅ add this
+      lampuType: null,
+      oliPack: null, // ✅ add this
       catColorQuery: null,
       catLastResults: null,
     });
@@ -1447,7 +1711,7 @@ class MessageHandler {
   async sendHelpMessage(senderId) {
     await this.sendTextMessage(
       senderId,
-      "Ketik 'ban' untuk pilih ukuran ban, atau 'katalog' untuk menu. Ketik 'lampu' untuk pilih TYPE LAMPU."
+      "Ketik 'ban' untuk pilih ukuran ban, atau 'katalog' untuk menu. Ketik 'lampu' untuk pilih TYPE LAMPU. Ketik 'oli' untuk pilih PACK."
     );
   }
 

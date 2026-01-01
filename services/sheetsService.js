@@ -31,14 +31,17 @@ class SheetsService {
         het_baru: ["HET BARU"],
       },
       Sheet_Oli: {
-        product_name: ["NAMA PRODUK", "PRODUCT", "NAME"],
+        // Columns in sheet: NO. PRODUCT MERK SAE PACK HARGA JUAL GROSIR GAMBAR
+        product_name: ["PRODUCT", "NAMA PRODUK", "NAME", "PRODUCT"],
         brand: ["MERK", "BRAND"],
-        type: ["JENIS", "TYPE", "TIPE"],
-        viscosity: ["KEKENTALAN", "VISCOSITY", "SAE"],
-        volume: ["VOLUME", "ISI", "LITER"],
+        // SAE (viscosity) and PACK (package/volume)
+        sae: ["SAE"],
+        pack: ["PACK"],
+        // Prices
         harga_jual: ["HARGA JUAL", "HARGA"],
+        grosir: ["GROSIR"],
         price_list: ["PRICE LIST", "HARGA LIST"],
-        image: ["GAMBAR", "FOTO"],
+        image: ["GAMBAR", "FOTO", "IMAGE"],
       },
       Sheet_Lampu: {
         no: ["NO", "No", "no"],
@@ -269,10 +272,10 @@ class SheetsService {
   parseOliProduct(row, index, categoryName, columnMap) {
     const productName = this.getCellValue(row, columnMap.product_name);
     const brand = this.getCellValue(row, columnMap.brand);
-    const type = this.getCellValue(row, columnMap.type);
-    const viscosity = this.getCellValue(row, columnMap.viscosity);
-    const volume = this.getCellValue(row, columnMap.volume);
+    const sae = this.getCellValue(row, columnMap.sae || columnMap.viscosity);
+    const pack = this.getCellValue(row, columnMap.pack || columnMap.volume);
     const hargaJual = this.getNumericValue(row, columnMap.harga_jual);
+    const grosir = this.getCellValue(row, columnMap.grosir);
     const gambar = this.getCellValue(row, columnMap.image);
 
     if (!productName && !brand) return null;
@@ -280,17 +283,17 @@ class SheetsService {
     return {
       id: `${categoryName}_${index + 1}`,
       category: categoryName,
-      name: productName || `${brand} ${type || ""}`.trim(),
+      name: productName || `${brand} ${sae || ""}`.trim(),
       brand,
-      type,
-      viscosity,
-      volume,
+      sae,
+      pack,
       harga_jual: hargaJual,
+      grosir_price: grosir || "",
       base_price: hargaJual,
       image_url: this.convertGoogleDriveUrl(gambar),
       is_available: true,
       row_index: index + 2,
-      specifications: [viscosity, volume].filter(Boolean).join(" - "),
+      specifications: [sae, pack].filter(Boolean).join(" - "),
     };
   }
 
@@ -634,6 +637,75 @@ SheetsService.prototype.getCatProducts = async function () {
     return await this.getProductsByCategory("cat");
   } catch (error) {
     console.error("Error in getCatProducts:", error.message);
+    return [];
+  }
+};
+
+// Get unique PACK values for Oli (normalized to numbers like '0.8', '1')
+SheetsService.prototype.getPackOliList = async function () {
+  try {
+    await this.ensureConnected();
+    const sheet = this.doc?.sheetsByTitle?.["Sheet_Oli"];
+    if (!sheet) return [];
+    const rows = await sheet.getRows();
+    const columnMap = this.columnMappings["Sheet_Oli"];
+
+    const normalizePack = (s) => {
+      if (!s) return null;
+      let t = String(s || "")
+        .trim()
+        .toLowerCase();
+      // common forms: '0.8L', '1 L', '1L', '1ltr', '800ml'
+      t = t.replace(/,/g, ".");
+      // convert ml to liters if present
+      const mlMatch = t.match(/(\d+(?:\.\d+)?)\s*ml/);
+      if (mlMatch) return String(parseFloat(mlMatch[1]) / 1000);
+      const numMatch = t.match(/(\d+(?:\.\d+)?)/);
+      if (!numMatch) return t;
+      return String(parseFloat(numMatch[1]));
+    };
+
+    const packs = rows
+      .map((r) => this.getCellValue(r, columnMap.pack))
+      .map((v) => normalizePack(v))
+      .filter((v) => v !== null && v !== undefined && String(v).trim() !== "");
+
+    // unique and sort numerically
+    const uniq = [...new Set(packs)].sort(
+      (a, b) => parseFloat(a) - parseFloat(b)
+    );
+    return uniq;
+  } catch (error) {
+    console.error("Error in getPackOliList:", error.message);
+    return [];
+  }
+};
+
+// Get all Oli products by PACK (normalized match)
+SheetsService.prototype.getProductsByPackOli = async function (pack) {
+  try {
+    const products = await this.getProductsByCategory("oli");
+    if (!pack || !products) return [];
+    const normalizePack = (s) => {
+      if (!s) return null;
+      let t = String(s || "")
+        .trim()
+        .toLowerCase();
+      t = t.replace(/,/g, ".");
+      const mlMatch = t.match(/(\d+(?:\.\d+)?)\s*ml/);
+      if (mlMatch) return String(parseFloat(mlMatch[1]) / 1000);
+      const numMatch = t.match(/(\d+(?:\.\d+)?)/);
+      if (!numMatch) return t;
+      return String(parseFloat(numMatch[1]));
+    };
+
+    const target = normalizePack(pack);
+    return products.filter((p) => {
+      const pPack = p.pack || p.volume || "";
+      return normalizePack(pPack) === target;
+    });
+  } catch (error) {
+    console.error("Error in getProductsByPackOli:", error.message);
     return [];
   }
 };
