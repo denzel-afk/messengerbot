@@ -41,21 +41,20 @@ class SheetsService {
         image: ["GAMBAR", "FOTO"],
       },
       Sheet_Lampu: {
-        product_name: ["NAMA PRODUK", "PRODUCT", "NAME"],
+        no: ["NO", "No", "no"],
+        product_name: ["TYPE", "NAMA PRODUK", "PRODUCT", "NAME"],
         brand: ["MERK", "BRAND"],
-        type: ["JENIS", "TYPE", "TIPE"],
-        watt: ["WATT", "DAYA"],
-        voltage: ["VOLTAGE", "VOLT"],
-        fitting: ["FITTING", "SOCKET"],
-        harga_jual: ["HARGA JUAL", "HARGA"],
+        type: ["TYPE LAMPU", "JENIS", "TIPE", "TYPE"],
+        harga_jual: ["RETAIL", "HARGA JUAL", "HARGA"],
         price_list: ["PRICE LIST"],
-        image: ["GAMBAR", "FOTO"],
+        image: ["GAMBAR", "FOTO", "IMAGE"],
       },
-      // CAT: only 3 columns (NAMA, MERK, JUAL)
+      // CAT: NAMA, MERK, JUAL, IMAGE
       Sheet_Cat: {
         product_name: ["NAMA", "NAMA PRODUK", "PRODUCT", "NAME"],
         brand: ["MERK", "BRAND"],
         harga_jual: ["JUAL", "HARGA JUAL", "HARGA"],
+        image: ["IMAGE", "GAMBAR", "FOTO"],
       },
     };
   }
@@ -296,38 +295,29 @@ class SheetsService {
   }
 
   parseLampuProduct(row, index, categoryName, columnMap) {
+    const no = this.getCellValue(row, columnMap.no);
     const productName = this.getCellValue(row, columnMap.product_name);
     const brand = this.getCellValue(row, columnMap.brand);
     const type = this.getCellValue(row, columnMap.type);
-    const watt = this.getCellValue(row, columnMap.watt);
-    const voltage = this.getCellValue(row, columnMap.voltage);
-    const fitting = this.getCellValue(row, columnMap.fitting);
     const hargaJual = this.getNumericValue(row, columnMap.harga_jual);
     const gambar = this.getCellValue(row, columnMap.image);
 
     if (!productName && !brand) return null;
+    const displayName = productName || [brand, type].filter(Boolean).join(" ");
 
     return {
       id: `${categoryName}_${index + 1}`,
       category: categoryName,
-      name: productName || `${brand} ${type || ""}`.trim(),
+      no: no || "",
+      name: displayName.trim(),
       brand,
       type,
-      watt,
-      voltage,
-      fitting,
       harga_jual: hargaJual,
       base_price: hargaJual,
       image_url: this.convertGoogleDriveUrl(gambar),
       is_available: true,
       row_index: index + 2,
-      specifications: [
-        watt ? `${watt}W` : "",
-        voltage ? `${voltage}V` : "",
-        fitting,
-      ]
-        .filter(Boolean)
-        .join(" - "),
+      specifications: [type].filter(Boolean).join(" - "),
     };
   }
 
@@ -336,6 +326,7 @@ class SheetsService {
     const productName = this.getCellValue(row, columnMap.product_name);
     const brand = this.getCellValue(row, columnMap.brand);
     const hargaJual = this.getNumericValue(row, columnMap.harga_jual);
+    const gambar = this.getCellValue(row, ["IMAGE", "GAMBAR", "FOTO"]);
 
     if (!productName && !brand) return null;
 
@@ -346,7 +337,7 @@ class SheetsService {
       brand,
       harga_jual: hargaJual,
       base_price: hargaJual,
-      image_url: "", // image handled elsewhere (internet / fallback)
+      image_url: this.convertGoogleDriveUrl(gambar) || gambar || "",
       is_available: true,
       row_index: index + 2,
       specifications: `${productName || ""} ${brand || ""}`.trim(),
@@ -679,6 +670,44 @@ SheetsService.prototype.getUkuranBanList = async function () {
     return [...new Set(sizes)].sort();
   } catch (error) {
     console.error("Error in getUkuranBanList:", error.message);
+    return [];
+  }
+};
+
+// Get unique type lampu for Lampu
+SheetsService.prototype.getTypeLampuList = async function () {
+  try {
+    await this.ensureConnected();
+    const sheet = this.doc?.sheetsByTitle?.["Sheet_Lampu"];
+    if (!sheet) {
+      console.error("Sheet_Lampu not found");
+      return [];
+    }
+    const rows = await sheet.getRows();
+    const columnMap = this.columnMappings["Sheet_Lampu"];
+    const types = rows
+      .map((row) => this.getCellValue(row, columnMap.type))
+      .filter((t) => t && t.trim() !== "");
+    return [...new Set(types)].sort();
+  } catch (error) {
+    console.error("Error in getTypeLampuList:", error.message);
+    return [];
+  }
+};
+
+// Get all lampu products by type lampu
+SheetsService.prototype.getLampuByTypeLampu = async function (typeLampu) {
+  try {
+    const products = await this.getProductsByCategory("lampu");
+    if (!typeLampu || !products) return [];
+    const normalize = (s) =>
+      String(s || "")
+        .trim()
+        .toLowerCase();
+    const search = normalize(typeLampu);
+    return products.filter((p) => p.type && normalize(p.type) === search);
+  } catch (error) {
+    console.error("Error in getLampuByTypeLampu:", error.message);
     return [];
   }
 };

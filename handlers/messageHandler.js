@@ -4,13 +4,17 @@ const facebookAPI = require("../services/facebookAPI");
 const gptService = require("../services/gptService");
 
 class MessageHandler {
-  // Remove sessions inactive for over 24 hours
+  constructor() {
+    this.userSessions = new Map();
+  }
+
   cleanupSessions() {
     const now = Date.now();
-    const timeout = 24 * 60 * 60 * 1000; // 24 hours
+    const timeout = 24 * 60 * 60 * 1000;
     let removed = 0;
     for (const [userId, session] of this.userSessions.entries()) {
-      if (!session.lastActive || now - session.lastActive > timeout) {
+      const last = session.lastActivity || session.lastActive || 0;
+      if (!last || now - last > timeout) {
         this.userSessions.delete(userId);
         removed++;
       }
@@ -18,10 +22,6 @@ class MessageHandler {
     if (removed > 0) {
       console.log(`[SessionCleanup] Removed ${removed} inactive sessions.`);
     }
-  }
-
-  constructor() {
-    this.userSessions = new Map();
   }
 
   // =========================
@@ -56,7 +56,7 @@ class MessageHandler {
         "Maaf, saya tidak mengerti format pesan tersebut 😅"
       );
     } catch (error) {
-      console.error("Error handling message:", error.message);
+      console.error("Error handling message:", error?.message || error);
       await this.sendTextMessage(senderId, "Maaf, ada error. Coba lagi ya! 🙏");
     }
   }
@@ -65,9 +65,36 @@ class MessageHandler {
   // TEXT
   // =========================
   async handleTextMessage(senderId, text, session) {
-    const textLower = String(text || "")
-      .toLowerCase()
-      .trim();
+    const rawText = String(text || "");
+    const textLower = rawText.toLowerCase().trim();
+
+    // katalog/menu/produk/categories (ALWAYS check first)
+    if (["katalog", "menu", "produk", "categories"].includes(textLower)) {
+      await this.sendCategoryMenu(senderId);
+      return;
+    }
+
+    // selesai
+    if (textLower === "selesai") {
+      if (session.selectedProducts && session.selectedProducts.length > 0) {
+        let summary = "📋 **Ringkasan Pilihanmu:**\n";
+        session.selectedProducts.forEach((p, i) => {
+          summary += `${i + 1}. ${p.name} (${p.brand || "-"})\n`;
+        });
+        summary += `\nSilakan screenshot daftar ini dan hubungi kami:\n☎️ WhatsApp: ${
+          process.env.SUPPORT_WHATSAPP || "081273574202"
+        }\n📍 Alamat: Jl. Ikan Nila V No. 30, Bumi Waras, Bandar Lampung, Lampung`;
+        await this.sendTextMessage(senderId, summary);
+        // Reset session after selesai
+        this.userSessions.delete(senderId);
+      } else {
+        await this.sendTextMessage(
+          senderId,
+          "Kamu belum memilih produk apapun. Silakan pilih produk terlebih dahulu."
+        );
+      }
+      return;
+    }
 
     // BAN: start size flow
     if (textLower === "ban") {
@@ -75,30 +102,41 @@ class MessageHandler {
       return;
     }
 
-    // CAT: start color flow
+    // ✅ LAMPU: start TYPE LAMPU flow (simple pick-pick)
+    if (textLower === "lampu") {
+      await this.sendTypeLampuMenu(senderId, 1, session);
+      return;
+    }
+
+    // CAT: allow direct typing "cat"
     if (textLower === "cat") {
       session.state = "cat_ask_color";
-      session.catColorQuery = null;
-      session.catLastResults = null;
       await this.sendTextMessage(
         senderId,
-        "🎨 Suka warna apa, juragan?\n(contoh: merah, biru, blue, silver)"
+        "🎨 Suka warna apa, juragan? (contoh: merah, biru, blue, silver, abu)"
       );
       return;
     }
 
-    // CAT: user answered color
+    // ✅ CAT: user answers color after we asked
     if (session.state === "cat_ask_color") {
-      const colorQuery = String(text || "").trim();
-      session.catColorQuery = colorQuery;
+      const color = rawText.trim();
+      if (!color) {
+        await this.sendTextMessage(
+          senderId,
+          "Warna nya apa, juragan? (contoh: biru / navy / silver)"
+        );
+        return;
+      }
+      session.catColorQuery = color;
       session.state = "cat_show_color";
-      await this.sendCatByColor(senderId, session, colorQuery, 1);
+      await this.sendCatByColor(senderId, session, color, 1);
       return;
     }
 
     // user types ukuran directly
     if (this.looksLikeUkuranBan(textLower)) {
-      const ukuran = String(text || "").trim();
+      const ukuran = rawText.trim();
       session.banUkuran = ukuran;
       session.state = "ban_show_ukuran";
       await this.sendBanByUkuran(senderId, session, ukuran, 1);
@@ -107,7 +145,7 @@ class MessageHandler {
 
     // "Tidak Yakin" flow: user replies motor name
     if (session.state === "ban_tanya_motor") {
-      session.banMotorQuery = String(text || "").trim();
+      session.banMotorQuery = rawText.trim();
       session.state = "ban_tanya_posisi";
       await this.sendTextMessage(senderId, "Ban depan atau belakang?");
       return;
@@ -115,17 +153,16 @@ class MessageHandler {
 
     // Setelah user jawab posisi:
     if (session.state === "ban_tanya_posisi") {
-      session.banPosisi = String(text || "").trim();
-      // Panggil GPT
+      session.banPosisi = rawText.trim();
+
       let ukuran = await gptService.getUkuranBanByMotor(
         session.banMotorQuery,
         session.banPosisi
       );
-      // Extract tire size pattern (e.g. 110/70-13) from GPT response
-      const match = ukuran.match(/(\d{2,3}\/\d{2,3}-\d{2,3})/);
-      if (match) {
-        ukuran = match[1];
-      }
+
+      const match = String(ukuran || "").match(/(\d{2,3}\/\d{2,3}-\d{2,3})/);
+      if (match) ukuran = match[1];
+
       session.banUkuran = ukuran;
       session.state = "ban_konfirmasi_ukuran";
       await this.sendTextMessage(
@@ -145,7 +182,7 @@ class MessageHandler {
         return;
       }
       if (this.looksLikeUkuranBan(textLower)) {
-        const ukuran = String(text || "").trim();
+        const ukuran = rawText.trim();
         session.banUkuran = ukuran;
         session.state = "ban_show_ukuran";
         await this.sendBanByUkuran(senderId, session, ukuran, 1);
@@ -158,50 +195,19 @@ class MessageHandler {
       return;
     }
 
-    // selesai
-    if (textLower === "selesai") {
-      if (session.selectedProducts && session.selectedProducts.length > 0) {
-        let summary = "📋 **Ringkasan Pilihanmu:**\n";
-        session.selectedProducts.forEach((p, i) => {
-          summary += `${i + 1}. ${p.name} (${p.brand || "-"})\n`;
-        });
-        summary += `\nSilakan screenshot daftar ini dan hubungi kami:\n☎️ WhatsApp: ${
-          process.env.SUPPORT_WHATSAPP || "081273574202"
-        }\n📍 Alamat: Jl. Ikan Nila V No. 30, Bumi Waras, Bandar Lampung, Lampung`;
-        await this.sendTextMessage(senderId, summary);
-        session.selectedProducts = [];
-      } else {
-        await this.sendTextMessage(
-          senderId,
-          "Kamu belum memilih produk apapun. Silakan pilih produk terlebih dahulu."
-        );
-      }
-      return;
-    }
-
     // General commands
-    if (["katalog", "menu", "produk", "categories"].includes(textLower)) {
-      await this.sendCategoryMenu(senderId);
-      return;
-    }
-
-    if (["lampu", "oli"].includes(textLower)) {
-      await this.sendCategoryProducts(senderId, textLower);
-      return;
-    }
-
     if (textLower === "bantuan" || textLower === "help") {
       await this.sendHelpMessage(senderId);
       return;
     }
 
     if (textLower.startsWith("cari ") || textLower.startsWith("search ")) {
-      const searchTerm = String(text || "").substring(5);
+      const searchTerm = rawText.substring(5);
       await this.searchAndSendProducts(senderId, searchTerm);
       return;
     }
 
-    await this.searchAndSendProducts(senderId, text);
+    await this.searchAndSendProducts(senderId, rawText);
   }
 
   // =========================
@@ -211,14 +217,14 @@ class MessageHandler {
     payload = String(payload || "");
     console.log(`🔘 Quick reply from ${senderId}: ${payload}`);
 
-    // ---------- CAT: pagination ----------
+    // ---------- CAT: PAGINATION (NEXT/PREV) ----------
     if (payload.startsWith("CAT_COLOR_PAGE_")) {
-      // CAT_COLOR_PAGE_<encodedColor>_<page>
+      // Format: CAT_COLOR_PAGE_<b64Color>_<page>
       const rest = payload.replace("CAT_COLOR_PAGE_", "");
       const parts = rest.split("_");
       const page = parseInt(parts[parts.length - 1], 10) || 1;
-      const encodedColor = parts.slice(0, -1).join("_");
-      const colorQuery = this.decodeTextPayload(encodedColor);
+      const b64Color = parts.slice(0, -1).join("_");
+      const colorQuery = this.decodeTextPayload(b64Color);
 
       session.state = "cat_show_color";
       session.catColorQuery = colorQuery;
@@ -226,18 +232,7 @@ class MessageHandler {
       return;
     }
 
-    if (payload === "CAT_CHANGE_COLOR") {
-      session.state = "cat_ask_color";
-      session.catColorQuery = null;
-      session.catLastResults = null;
-      await this.sendTextMessage(
-        senderId,
-        "🎨 Oke! Suka warna apa, juragan?\n(contoh: merah, biru, blue, silver)"
-      );
-      return;
-    }
-
-    // ---------- BAN: PAGE SIZE MENU (MUST COME FIRST) ----------
+    // ---------- BAN: PAGE SIZE MENU ----------
     if (payload.startsWith("UKURAN_BAN_PAGE_")) {
       const page = parseInt(payload.replace("UKURAN_BAN_PAGE_", ""), 10) || 1;
       await this.sendUkuranBanMenu(senderId, page, session);
@@ -246,7 +241,6 @@ class MessageHandler {
 
     // ---------- BAN: PAGE PRODUCTS BY UKURAN ----------
     if (payload.startsWith("BAN_UKURAN_PAGE_")) {
-      // BAN_UKURAN_PAGE_<encodedUkuran>_<page>
       const rest = payload.replace("BAN_UKURAN_PAGE_", "");
       const parts = rest.split("_");
       const page = parseInt(parts[parts.length - 1], 10) || 1;
@@ -286,58 +280,73 @@ class MessageHandler {
       return;
     }
 
+    // =========================
+    // ✅ LAMPU: TYPE FLOW
+    // =========================
+
+    // paginate type list
+    if (payload.startsWith("TYPE_LAMPU_PAGE_")) {
+      const page = parseInt(payload.replace("TYPE_LAMPU_PAGE_", ""), 10) || 1;
+      await this.sendTypeLampuMenu(senderId, page, session);
+      return;
+    }
+
+    // select type
+    if (payload.startsWith("TYPE_LAMPU_")) {
+      const encoded = payload.replace("TYPE_LAMPU_", "");
+      const typeLampu = this.decodeTextPayload(encoded);
+
+      session.lampuType = typeLampu;
+      session.state = "lampu_show_type";
+      await this.sendLampuByType(senderId, session, typeLampu, 1);
+      return;
+    }
+
+    // paginate products by type
+    if (payload.startsWith("LAMPU_TYPE_PAGE_")) {
+      // Format: LAMPU_TYPE_PAGE_<b64Type>_<page>
+      const rest = payload.replace("LAMPU_TYPE_PAGE_", "");
+      const parts = rest.split("_");
+      const page = parseInt(parts[parts.length - 1], 10) || 1;
+      const b64Type = parts.slice(0, -1).join("_");
+      const typeLampu = this.decodeTextPayload(b64Type);
+
+      session.lampuType = typeLampu;
+      session.state = "lampu_show_type";
+      await this.sendLampuByType(senderId, session, typeLampu, page);
+      return;
+    }
+
+    // back to type list
+    if (payload === "LAMPU_PILIH_TYPE") {
+      await this.sendTypeLampuMenu(senderId, 1, session);
+      return;
+    }
+
     // ---------- CATEGORY ----------
     if (payload.startsWith("CATEGORY_")) {
       const category = payload.replace("CATEGORY_", "").toLowerCase();
       session.currentCategory = category;
 
+      // ✅ CAT SPECIAL: ask color first (NO brand menu)
+      if (category === "cat") {
+        session.state = "cat_ask_color";
+        await this.sendTextMessage(
+          senderId,
+          "🎨 Mau warna apa, juragan? (contoh: biru / blue / navy / silver / abu)"
+        );
+        return;
+      }
+
+      // ✅ BAN SPECIAL
       if (category === "ban") {
         await this.sendUkuranBanMenu(senderId, 1, session);
         return;
       }
 
-      // Untuk CAT: tampilkan menu merk cat dulu
-      if (category === "cat") {
-        try {
-          const brands = await sheetsService.getBrandsByCategory("cat");
-          if (!brands || brands.length === 0) {
-            await this.sendTextMessage(
-              senderId,
-              "Maaf, data merk cat belum tersedia."
-            );
-            return;
-          }
-          const quickReplies = brands.slice(0, 11).map((brand) => ({
-            content_type: "text",
-            title: brand,
-            payload: `CAT_BRAND_${brand
-              .toUpperCase()
-              .replace(/[^A-Z0-9]/g, "_")}`,
-          }));
-          await this.sendQuickReply(senderId, "Pilih merk cat:", quickReplies);
-          session.state = "cat_ask_brand";
-        } catch (err) {
-          await this.sendTextMessage(
-            senderId,
-            "Maaf, gagal mengambil data merk cat."
-          );
-        }
-        return;
-      }
-      // ---------- CAT: pilih merk ----------
-      if (payload.startsWith("CAT_BRAND_")) {
-        const brand = payload
-          .replace("CAT_BRAND_", "")
-          .replace(/_/g, " ")
-          .trim();
-        session.catBrand = brand;
-        session.state = "cat_ask_color";
-        session.catColorQuery = null;
-        session.catLastResults = null;
-        await this.sendTextMessage(
-          senderId,
-          `🎨 Suka warna apa untuk merk ${brand}?\n(contoh: merah, biru, blue, silver)`
-        );
+      // ✅ LAMPU SPECIAL: ask TYPE first (NO brand menu)
+      if (category === "lampu") {
+        await this.sendTypeLampuMenu(senderId, 1, session);
         return;
       }
 
@@ -359,7 +368,7 @@ class MessageHandler {
     if (payload === "SEARCH_AGAIN") {
       await this.sendTextMessage(
         senderId,
-        '🔍 Ketik nama produk yang ingin kamu cari:\n\n💡 **Contoh:**\n• "ban corsa"\n• "oli castrol"\n• "lampu LED"'
+        '🔍 Ketik nama produk yang ingin kamu cari:\n\n💡 **Contoh:**\n• "ban corsa"\n• "oli castrol"\n• "lampu LED"\n• "cat biru"'
       );
       return;
     }
@@ -436,187 +445,30 @@ class MessageHandler {
       const category = payload.replace("CATEGORY_", "").toLowerCase();
       session.currentCategory = category;
 
+      // ✅ CAT SPECIAL: ask color first
+      if (category === "cat") {
+        session.state = "cat_ask_color";
+        await this.sendTextMessage(
+          senderId,
+          "🎨 Mau warna apa, juragan? (contoh: biru / blue / navy / silver / abu)"
+        );
+        return;
+      }
+
+      // ✅ BAN SPECIAL
       if (category === "ban") {
         await this.sendUkuranBanMenu(senderId, 1, session);
         return;
       }
 
-      if (category === "cat") {
-        session.state = "cat_ask_color";
-        session.catColorQuery = null;
-        session.catLastResults = null;
-        await this.sendTextMessage(
-          senderId,
-          "🎨 Suka warna apa, juragan?\n(contoh: merah, biru, blue, silver)"
-        );
+      // ✅ LAMPU SPECIAL
+      if (category === "lampu") {
+        await this.sendTypeLampuMenu(senderId, 1, session);
         return;
       }
 
       await this.sendBrandMenu(senderId, category, session);
       return;
-    }
-  }
-
-  // =========================
-  // CAT: SHOW PRODUCTS BY COLOR (GPT MATCH)
-  // =========================
-  async sendCatByColor(senderId, session, colorQuery, page = 1) {
-    try {
-      await this.sendTypingOn(senderId);
-
-      const allCat = await sheetsService.getCatProducts(); // uses getProductsByCategory("cat")
-      if (!allCat || allCat.length === 0) {
-        await this.sendTextMessage(
-          senderId,
-          "Maaf juragan, produk cat belum ada di database 😅",
-          [
-            {
-              content_type: "text",
-              title: "🏠 Menu Utama",
-              payload: "MAIN_MENU",
-            },
-          ]
-        );
-        return;
-      }
-
-      // GPT match => list of ids
-      const gptRes = await gptService.matchCatProductsByColor(
-        colorQuery,
-        allCat,
-        30 // collect more then paginate
-      );
-
-      const idToProduct = new Map(allCat.map((p) => [String(p.id), p]));
-      const matchedProducts = (gptRes.matches || [])
-        .map((m) => idToProduct.get(String(m.id)))
-        .filter(Boolean);
-
-      // Store last results in session so ORDER/DETAIL can resolve by idx
-      const key = this.encodeTextPayload(colorQuery);
-      session.catLastResults = {
-        key,
-        colorQuery,
-        keywords: gptRes.keywords || [],
-        products: matchedProducts,
-      };
-
-      if (!matchedProducts.length) {
-        await this.sendTextMessage(
-          senderId,
-          `Waduh, aku belum nemu cat yang cocok untuk warna "${colorQuery}" 😅\nCoba sebutin lebih spesifik ya (misal: "dakota blue", "navy", "silver metallic")`,
-          [
-            {
-              content_type: "text",
-              title: "🎨 Ganti Warna",
-              payload: "CAT_CHANGE_COLOR",
-            },
-            {
-              content_type: "text",
-              title: "🏠 Menu Utama",
-              payload: "MAIN_MENU",
-            },
-          ]
-        );
-        return;
-      }
-
-      const perPage = 8; // keep carousel manageable
-      const totalPages = Math.max(
-        1,
-        Math.ceil(matchedProducts.length / perPage)
-      );
-      const safePage = Math.min(Math.max(page, 1), totalPages);
-
-      const start = (safePage - 1) * perPage;
-      const show = matchedProducts.slice(start, start + perPage);
-
-      const elements = show.map((p, i) => {
-        const globalIdx = start + i;
-        const encodedColor = session.catLastResults.key;
-
-        // For CAT, show name + brand only
-        const title = (p.name || "").slice(0, 80);
-        const subtitle = (p.brand || "").slice(0, 80) || " ";
-
-        return {
-          title,
-          subtitle,
-          image_url: this.unsplashImageForPaintName(p.name),
-          buttons: [
-            {
-              type: "postback",
-              title: "📋 Detail",
-              payload: `DETAIL_CAT_COLOR_${encodedColor}_${globalIdx}`,
-            },
-            {
-              type: "postback",
-              title: "🛒 Pesan",
-              payload: `ORDER_CAT_COLOR_${encodedColor}_${globalIdx}`,
-            },
-          ],
-        };
-      });
-
-      await this.sendCarousel(senderId, elements);
-
-      const quickReplies = [];
-
-      if (safePage > 1) {
-        quickReplies.push({
-          content_type: "text",
-          title: "⬅️ Prev",
-          payload: `CAT_COLOR_PAGE_${session.catLastResults.key}_${
-            safePage - 1
-          }`,
-        });
-      }
-      if (safePage < totalPages) {
-        quickReplies.push({
-          content_type: "text",
-          title: "Next ➡️",
-          payload: `CAT_COLOR_PAGE_${session.catLastResults.key}_${
-            safePage + 1
-          }`,
-        });
-      }
-
-      quickReplies.push(
-        {
-          content_type: "text",
-          title: "🎨 Ganti Warna",
-          payload: "CAT_CHANGE_COLOR",
-        },
-        { content_type: "text", title: "🏠 Menu Utama", payload: "MAIN_MENU" }
-      );
-
-      const keywordHint =
-        (session.catLastResults.keywords || []).length > 0
-          ? `\n🔎 Keywords: ${session.catLastResults.keywords
-              .slice(0, 6)
-              .join(", ")}`
-          : "";
-
-      await this.callSendAPI({
-        recipient: { id: senderId },
-        message: {
-          text:
-            `🎨 Hasil cat untuk warna: "${colorQuery}"` +
-            `\n📦 Menampilkan ${show.length} dari ${matchedProducts.length}` +
-            (totalPages > 1
-              ? `\n📄 Halaman ${safePage} dari ${totalPages}`
-              : "") +
-            keywordHint +
-            `\n\nKlik "Pesan" untuk tambah ke pilihan. Ketik "selesai" untuk ringkasan.`,
-          quick_replies: quickReplies.slice(0, 13),
-        },
-      });
-    } catch (e) {
-      console.error("❌ sendCatByColor error:", e?.message || e);
-      await this.sendTextMessage(
-        senderId,
-        "Maaf juragan, error saat cari cat berdasarkan warna 😅\nCoba lagi ya."
-      );
     }
   }
 
@@ -630,8 +482,7 @@ class MessageHandler {
     const safePage = Math.min(Math.max(page, 1), totalPages);
 
     const start = (safePage - 1) * perPage;
-    const end = start + perPage;
-    const show = ukuranList.slice(start, end);
+    const show = ukuranList.slice(start, start + perPage);
 
     const quickReplies = [];
 
@@ -651,6 +502,14 @@ class MessageHandler {
       });
     });
 
+    // Place 'Tidak Yakin' as the first quick reply so user can choose it immediately
+    const tidakYakinQR = {
+      content_type: "text",
+      title: "Tidak Yakin",
+      payload: "UKURAN_BAN_TIDAK_YAKIN",
+    };
+
+    // Add Next if needed
     if (safePage < totalPages) {
       quickReplies.push({
         content_type: "text",
@@ -659,18 +518,15 @@ class MessageHandler {
       });
     }
 
-    quickReplies.push(
-      {
-        content_type: "text",
-        title: "Tidak Yakin",
-        payload: "UKURAN_BAN_TIDAK_YAKIN",
-      },
-      {
-        content_type: "text",
-        title: "🏠 Menu Utama",
-        payload: "MAIN_MENU",
-      }
-    );
+    // Ensure 'Tidak Yakin' is first
+    quickReplies.unshift(tidakYakinQR);
+
+    // Always add Main Menu at the end
+    quickReplies.push({
+      content_type: "text",
+      title: "🏠 Menu Utama",
+      payload: "MAIN_MENU",
+    });
 
     await this.sendTextMessage(
       senderId,
@@ -683,6 +539,169 @@ class MessageHandler {
   }
 
   // =========================
+  // ✅ LAMPU: TYPE LAMPU MENU (PAGINATED)
+  // =========================
+  async sendTypeLampuMenu(senderId, page = 1, session) {
+    const typeList = (await sheetsService.getTypeLampuList()) || [];
+    const perPage = 10;
+    const totalPages = Math.max(1, Math.ceil(typeList.length / perPage));
+    const safePage = Math.min(Math.max(page, 1), totalPages);
+
+    const start = (safePage - 1) * perPage;
+    const show = typeList.slice(start, start + perPage);
+
+    const quickReplies = [];
+
+    if (safePage > 1) {
+      quickReplies.push({
+        content_type: "text",
+        title: "⬅️ Prev",
+        payload: `TYPE_LAMPU_PAGE_${safePage - 1}`,
+      });
+    }
+
+    show.forEach((t) => {
+      quickReplies.push({
+        content_type: "text",
+        title: String(t).slice(0, 20),
+        payload: `TYPE_LAMPU_${this.encodeTextPayload(t)}`,
+      });
+    });
+
+    if (safePage < totalPages) {
+      quickReplies.push({
+        content_type: "text",
+        title: "Next ➡️",
+        payload: `TYPE_LAMPU_PAGE_${safePage + 1}`,
+      });
+    }
+
+    quickReplies.push({
+      content_type: "text",
+      title: "🏠 Menu Utama",
+      payload: "MAIN_MENU",
+    });
+
+    await this.sendTextMessage(
+      senderId,
+      `💡 Pilih TYPE LAMPU yang dicari:` +
+        (totalPages > 1 ? `\nHalaman ${safePage} dari ${totalPages}` : ""),
+      quickReplies.slice(0, 13)
+    );
+
+    session.state = "lampu_choose_type";
+  }
+
+  // =========================
+  // ✅ LAMPU: SHOW PRODUCTS BY TYPE (PAGINATED)
+  // =========================
+  async sendLampuByType(senderId, session, typeLampu, page = 1) {
+    try {
+      await this.sendTypingOn(senderId);
+
+      const products =
+        (await sheetsService.getLampuByTypeLampu(typeLampu)) || [];
+      if (!products.length) {
+        await this.sendTextMessage(
+          senderId,
+          `Maaf, belum ada lampu untuk TYPE LAMPU **${typeLampu}** 😅\n\nPilih type lain ya.`,
+          [
+            {
+              content_type: "text",
+              title: "📂 Type Lain",
+              payload: "LAMPU_PILIH_TYPE",
+            },
+            {
+              content_type: "text",
+              title: "🏠 Menu Utama",
+              payload: "MAIN_MENU",
+            },
+          ]
+        );
+        return;
+      }
+
+      const maxPerPage = 10;
+      const totalPages = Math.max(1, Math.ceil(products.length / maxPerPage));
+      const safePage = Math.min(Math.max(page, 1), totalPages);
+
+      const startIndex = (safePage - 1) * maxPerPage;
+      const show = products.slice(startIndex, startIndex + maxPerPage);
+
+      const elements = show.map((p, i) => {
+        const globalIndex = startIndex + i;
+        const productId = `LAMPU_TYPE_${this.encodeTextPayload(
+          typeLampu
+        )}_${globalIndex}`;
+
+        return {
+          title: String(p.name || "").slice(0, 80),
+          subtitle: this.formatProductSubtitle(p),
+          image_url:
+            this.normalizeImageUrl(p.image_url) ||
+            this.getDefaultProductImage("lampu"),
+          buttons: [
+            {
+              type: "postback",
+              title: "🛒 Tertarik",
+              payload: `ORDER_${productId}`,
+            },
+          ],
+        };
+      });
+
+      await this.sendCarousel(senderId, elements);
+
+      const b64Type = this.encodeTextPayload(typeLampu);
+      const quickReplies = [];
+
+      if (totalPages > 1 && safePage > 1) {
+        quickReplies.push({
+          content_type: "text",
+          title: "⬅️ Prev",
+          payload: `LAMPU_TYPE_PAGE_${b64Type}_${safePage - 1}`,
+        });
+      }
+      if (totalPages > 1 && safePage < totalPages) {
+        quickReplies.push({
+          content_type: "text",
+          title: "Next ➡️",
+          payload: `LAMPU_TYPE_PAGE_${b64Type}_${safePage + 1}`,
+        });
+      }
+
+      quickReplies.push(
+        {
+          content_type: "text",
+          title: "📂 Type Lain",
+          payload: "LAMPU_PILIH_TYPE",
+        },
+        { content_type: "text", title: "🏠 Menu Utama", payload: "MAIN_MENU" }
+      );
+
+      await this.sendTextMessage(
+        senderId,
+        `💡 **Lampu TYPE ${typeLampu}**\n` +
+          `📦 Menampilkan ${show.length} dari ${products.length}` +
+          (totalPages > 1
+            ? `\n📄 Halaman ${safePage} dari ${totalPages}`
+            : "") +
+          `\n\nKlik "Tertarik" untuk simpan pilihan. Ketik "selesai" untuk ringkasan.`,
+        quickReplies.slice(0, 13)
+      );
+
+      session.state = "lampu_show_type";
+      session.lampuType = typeLampu;
+    } catch (e) {
+      console.error("❌ sendLampuByType error:", e?.message || e);
+      await this.sendTextMessage(
+        senderId,
+        "Maaf, error saat ambil lampu berdasarkan TYPE 😅"
+      );
+    }
+  }
+
+  // =========================
   // BAN: SHOW ALL PRODUCTS BY UKURAN (NO BRAND)
   // =========================
   async sendBanByUkuran(senderId, session, ukuran, page = 1) {
@@ -690,7 +709,7 @@ class MessageHandler {
       await this.sendTypingOn(senderId);
 
       let products = await sheetsService.getProductsByUkuranBan(ukuran);
-      products = products.sort((a, b) => {
+      products = (products || []).sort((a, b) => {
         const isMaxxisA = (a.brand || "").toLowerCase().includes("maxxis")
           ? -1
           : 1;
@@ -725,19 +744,19 @@ class MessageHandler {
       const safePage = Math.min(Math.max(page, 1), totalPages);
 
       const startIndex = (safePage - 1) * maxPerPage;
-      const endIndex = startIndex + maxPerPage;
-      const show = products.slice(startIndex, endIndex);
+      const show = products.slice(startIndex, startIndex + maxPerPage);
 
       const elements = show.map((p, i) => {
         const globalIndex = startIndex + i;
         const productId = `BAN_SIZE_${this.encodeUkuran(
           ukuran
         )}_${globalIndex}`;
-
         return {
           title: p.name,
           subtitle: this.formatProductSubtitle(p),
-          image_url: p.image_url || this.getDefaultProductImage("ban"),
+          image_url:
+            this.normalizeImageUrl(p.image_url) ||
+            this.getDefaultProductImage("ban"),
           buttons: [
             {
               type: "postback",
@@ -746,7 +765,7 @@ class MessageHandler {
             },
             {
               type: "postback",
-              title: "🛒 Pesan",
+              title: "🛒 TERTARIK",
               payload: `ORDER_${productId}`,
             },
           ],
@@ -795,7 +814,7 @@ class MessageHandler {
             (totalPages > 1
               ? `\n📄 Halaman ${safePage} dari ${totalPages}`
               : "") +
-            `\n\nKlik "Pesan" untuk tambah ke pilihan. Ketik "selesai" untuk ringkasan.`,
+            `\n\nKlik "Tertarik" untuk tambah ke pilihan. Ketik "selesai" untuk ringkasan.`,
           quick_replies: quickReplies.slice(0, 13),
         },
       });
@@ -803,7 +822,7 @@ class MessageHandler {
       session.state = "ban_show_ukuran";
       session.banUkuran = ukuran;
     } catch (e) {
-      console.error("❌ sendBanByUkuran error:", e.message);
+      console.error("❌ sendBanByUkuran error:", e?.message || e);
       await this.sendTextMessage(
         senderId,
         "Maaf, error saat ambil ban berdasarkan ukuran 😅"
@@ -812,32 +831,173 @@ class MessageHandler {
   }
 
   // =========================
-  // ADD TO SELECTION
+  // ✅ CAT: MATCH BY COLOR (GPT) + PAGINATION
+  // =========================
+  async sendCatByColor(senderId, session, userColor, page = 1) {
+    try {
+      await this.sendTypingOn(senderId);
+
+      const pageSize = 10;
+
+      const catProducts = await this.getAllCatProductsNormalized();
+      if (!catProducts.length) {
+        await this.sendTextMessage(
+          senderId,
+          "Maaf, produk cat belum tersedia 😅",
+          [
+            {
+              content_type: "text",
+              title: "🏠 Menu Utama",
+              payload: "MAIN_MENU",
+            },
+          ]
+        );
+        session.state = "cat_ask_color";
+        return;
+      }
+
+      let matchIds = [];
+      let keywords = [];
+
+      const cacheOk =
+        session.catLastResults &&
+        session.catLastResults.colorQuery === userColor &&
+        Array.isArray(session.catLastResults.matchIds);
+
+      if (!cacheOk) {
+        const res = await gptService.matchCatProductsByColor(
+          userColor,
+          catProducts,
+          1000
+        );
+        matchIds = (res.matches || []).map((m) => String(m.id));
+        keywords = res.keywords || [];
+        session.catLastResults = { matchIds, keywords, colorQuery: userColor };
+        session.catColorQuery = userColor;
+      } else {
+        matchIds = session.catLastResults.matchIds || [];
+        keywords = session.catLastResults.keywords || [];
+      }
+
+      const matched = matchIds
+        .map((id) => catProducts.find((p) => String(p.id) === id))
+        .filter(Boolean);
+
+      if (!matched.length) {
+        await this.sendTextMessage(
+          senderId,
+          `Waduh, aku belum nemu cat yang cocok buat warna "${userColor}" 😅\nCoba sebutin versi lain ya (contoh: "navy", "sky blue", "silver metallic").`,
+          [
+            {
+              content_type: "text",
+              title: "🏠 Menu Utama",
+              payload: "MAIN_MENU",
+            },
+          ]
+        );
+        session.state = "cat_ask_color";
+        return;
+      }
+
+      const totalPages = Math.max(1, Math.ceil(matched.length / pageSize));
+      const safePage = Math.min(Math.max(page, 1), totalPages);
+
+      const startIdx = (safePage - 1) * pageSize;
+      const show = matched.slice(startIdx, startIdx + pageSize);
+
+      const elements = show.map((p) => {
+        const productId = `CAT_${String(p.id)}`;
+        return {
+          title: String(p.name || "").slice(0, 80),
+          subtitle: String(p.brand || "-").slice(0, 80),
+          image_url:
+            this.normalizeImageUrl(p.image_url) ||
+            this.getDefaultProductImage("cat"),
+          buttons: [
+            {
+              type: "postback",
+              title: "🛒 TERTARIK",
+              payload: `ORDER_${productId}`,
+            },
+          ],
+        };
+      });
+
+      await this.sendCarousel(senderId, elements);
+
+      const b64Color = this.encodeTextPayload(userColor);
+      const quickReplies = [];
+
+      if (safePage > 1) {
+        quickReplies.push({
+          content_type: "text",
+          title: "⬅️ Prev",
+          payload: `CAT_COLOR_PAGE_${b64Color}_${safePage - 1}`,
+        });
+      }
+      if (safePage < totalPages) {
+        quickReplies.push({
+          content_type: "text",
+          title: "Next ➡️",
+          payload: `CAT_COLOR_PAGE_${b64Color}_${safePage + 1}`,
+        });
+      }
+
+      quickReplies.push(
+        {
+          content_type: "text",
+          title: "🎨 Ganti Warna",
+          payload: "CATEGORY_CAT",
+        },
+        { content_type: "text", title: "🏠 Menu Utama", payload: "MAIN_MENU" }
+      );
+
+      const kw = (keywords || []).slice(0, 8);
+      const kwLine = kw.length
+        ? `\n🔎 Aku cari yang mirip: ${kw.join(", ")}`
+        : "";
+
+      await this.sendTextMessage(
+        senderId,
+        `🎨 Hasil cat untuk warna **${userColor}** (${safePage}/${totalPages})${kwLine}\n\nKlik "Tertarik" untuk simpan pilihan. Ketik "selesai" untuk ringkasan.`,
+        quickReplies.slice(0, 13)
+      );
+
+      session.state = "cat_show_color";
+    } catch (e) {
+      console.error(
+        "❌ sendCatByColor error:",
+        e?.message || e,
+        e?.stack || ""
+      );
+      await this.sendTextMessage(
+        senderId,
+        "Maaf, error saat cari cat berdasarkan warna 😅\nCoba ketik warna lagi ya."
+      );
+      session.state = "cat_ask_color";
+    }
+  }
+
+  // =========================
+  // ADD PRODUCT TO SELECTION
   // =========================
   async addProductToSelection(senderId, productId, session) {
     let product = null;
 
-    // CAT_COLOR flow selection:
-    // ORDER_CAT_COLOR_<encodedColor>_<idx>
-    if (String(productId).startsWith("CAT_COLOR_")) {
+    // ✅ LAMPU_TYPE_<b64Type>_<index>
+    if (String(productId).startsWith("LAMPU_TYPE_")) {
       const parts = String(productId).split("_");
-      const encodedColor = parts[2];
+      const b64Type = parts[2];
       const idx = parseInt(parts[3], 10);
+      const typeLampu = this.decodeTextPayload(b64Type);
 
-      if (
-        session?.catLastResults?.key === encodedColor &&
-        Array.isArray(session.catLastResults.products) &&
-        session.catLastResults.products[idx]
-      ) {
-        product = session.catLastResults.products[idx];
-      } else {
-        // fallback: re-run using stored query if available
-        const colorQuery =
-          session?.catColorQuery || this.decodeTextPayload(encodedColor);
-        await this.sendCatByColor(senderId, session, colorQuery, 1);
+      const products = await sheetsService.getLampuByTypeLampu(typeLampu);
+      if (products && products[idx]) product = products[idx];
+
+      if (!product) {
         await this.sendTextMessage(
           senderId,
-          "Coba klik Pesan lagi ya juragan 🙏"
+          "❌ Produk lampu tidak ditemukan."
         );
         return;
       }
@@ -849,12 +1009,12 @@ class MessageHandler {
         senderId,
         `✅ Produk ditambahkan: ${product.name} (${
           product.brand || "-"
-        })\n\nMau cari warna lain?`,
+        })\n\nMau tambah lagi? Pilih type lain atau ketik "selesai".`,
         [
           {
             content_type: "text",
-            title: "🎨 Ganti Warna",
-            payload: "CAT_CHANGE_COLOR",
+            title: "📂 Type Lain",
+            payload: "LAMPU_PILIH_TYPE",
           },
           {
             content_type: "text",
@@ -863,6 +1023,31 @@ class MessageHandler {
           },
         ]
       );
+      return;
+    }
+
+    // ✅ CAT_<id>
+    if (String(productId).startsWith("CAT_")) {
+      const id = String(productId).replace("CAT_", "");
+      const catProducts = await this.getAllCatProductsNormalized();
+      product = catProducts.find((p) => String(p.id) === String(id));
+
+      if (!product) {
+        await this.sendTextMessage(senderId, "❌ Produk cat tidak ditemukan.");
+        return;
+      }
+
+      if (!session.selectedProducts) session.selectedProducts = [];
+      session.selectedProducts.push(product);
+
+      await this.sendTextMessage(
+        senderId,
+        `✅ Ditambahkan: ${product.name} (${
+          product.brand || "-"
+        })\n\nMau tambah lagi? Ketik warna lain, atau ketik "selesai".`
+      );
+
+      session.state = "cat_ask_color";
       return;
     }
 
@@ -905,7 +1090,7 @@ class MessageHandler {
       return;
     }
 
-    // fallback old pattern CATEGORY_BRAND_INDEX (keep your legacy)
+    // fallback old pattern CATEGORY_BRAND_INDEX
     const parts = String(productId).split("_");
     if (parts.length >= 3) {
       const category = parts[0].toLowerCase();
@@ -913,11 +1098,11 @@ class MessageHandler {
       const index = parseInt(parts[2], 10);
 
       const products = await sheetsService.getProductsByBrand(category, brand);
-      if (products[index]) product = products[index];
+      if (products && products[index]) product = products[index];
 
       if (!product) {
         const productResult = await sheetsService.getProductById(productId);
-        if (!productResult.success) {
+        if (!productResult?.success) {
           await this.sendTextMessage(senderId, "❌ Produk tidak ditemukan.");
           return;
         }
@@ -937,55 +1122,12 @@ class MessageHandler {
   }
 
   // =========================
-  // PRODUCT DETAIL
+  // PRODUCT DETAIL (BAN ONLY HERE)
   // =========================
   async sendProductDetail(senderId, productIdWithPrefix) {
     try {
-      const session = await this.getUserSession(senderId);
       const cleaned = String(productIdWithPrefix).replace("DETAIL_", "");
 
-      // CAT detail:
-      // CAT_COLOR_<encodedColor>_<idx>
-      if (cleaned.startsWith("CAT_COLOR_")) {
-        const parts = cleaned.split("_");
-        const encodedColor = parts[2];
-        const idx = parseInt(parts[3], 10);
-
-        const p =
-          session?.catLastResults?.key === encodedColor
-            ? session.catLastResults.products?.[idx]
-            : null;
-
-        if (!p) {
-          await this.sendTextMessage(
-            senderId,
-            "Maaf, detail cat tidak ditemukan 😅"
-          );
-          return;
-        }
-
-        const detail = `🎨 **${p.name}**\n🏷️ Merk: ${
-          p.brand || "-"
-        }\n💰 Harga: Rp ${this.formatRupiah(
-          p.harga_jual || 0
-        )}\n\n(Preview gambar dari internet ya juragan 😄)`;
-
-        await this.sendTextMessage(senderId, detail, [
-          {
-            content_type: "text",
-            title: "🎨 Ganti Warna",
-            payload: "CAT_CHANGE_COLOR",
-          },
-          {
-            content_type: "text",
-            title: "🏠 Menu Utama",
-            payload: "MAIN_MENU",
-          },
-        ]);
-        return;
-      }
-
-      // BAN detail:
       if (cleaned.startsWith("BAN_SIZE_")) {
         const parts = cleaned.split("_");
         const encodedUkuran = parts[2];
@@ -1023,7 +1165,7 @@ class MessageHandler {
         "Detail produk belum tersedia untuk format ini."
       );
     } catch (e) {
-      console.error("❌ sendProductDetail error:", e.message);
+      console.error("❌ sendProductDetail error:", e?.message || e);
       await this.sendTextMessage(
         senderId,
         "Maaf, ada error saat mengambil detail 😅"
@@ -1038,36 +1180,28 @@ class MessageHandler {
     const SESSION_TIMEOUT = 24 * 60 * 60 * 1000;
     const now = Date.now();
 
-    if (!this.userSessions.has(senderId)) {
-      this.userSessions.set(senderId, {
-        state: null,
-        orderData: null,
-        lastActivity: now,
-        selectedProducts: [],
-        banUkuran: null,
-        banMotorQuery: null,
-        banPosisi: null,
+    const fresh = () => ({
+      state: null,
+      orderData: null,
+      lastActivity: now,
+      selectedProducts: [],
+      banUkuran: null,
+      banMotorQuery: null,
+      banPosisi: null,
+      lampuType: null, // ✅ add this
+      catColorQuery: null,
+      catLastResults: null,
+    });
 
-        catColorQuery: null,
-        catLastResults: null,
-      });
+    if (!this.userSessions.has(senderId)) {
+      this.userSessions.set(senderId, fresh());
       return this.userSessions.get(senderId);
     }
 
     const s = this.userSessions.get(senderId);
-    if (now - s.lastActivity > SESSION_TIMEOUT) {
-      this.userSessions.set(senderId, {
-        state: null,
-        orderData: null,
-        lastActivity: now,
-        selectedProducts: [],
-        banUkuran: null,
-        banMotorQuery: null,
-        banPosisi: null,
-
-        catColorQuery: null,
-        catLastResults: null,
-      });
+    const last = s.lastActivity || s.lastActive || 0;
+    if (now - last > SESSION_TIMEOUT) {
+      this.userSessions.set(senderId, fresh());
       return this.userSessions.get(senderId);
     }
 
@@ -1090,34 +1224,20 @@ class MessageHandler {
     return /(\d{2,3}\s*\/\s*\d{2,3})(-\d{2})?/i.test(String(s));
   }
 
-  // payload-safe encode/decode for color query (avoid "_" entirely)
   encodeTextPayload(s) {
     return Buffer.from(String(s || ""), "utf8")
       .toString("base64")
-      .replace(/=/g, "")
       .replace(/\+/g, "-")
-      .replace(/\//g, "~");
+      .replace(/\//g, "_")
+      .replace(/=+$/g, "");
   }
 
-  decodeTextPayload(enc) {
-    let b64 = String(enc || "")
+  decodeTextPayload(b64) {
+    let s = String(b64 || "")
       .replace(/-/g, "+")
-      .replace(/~/g, "/");
-    while (b64.length % 4 !== 0) b64 += "=";
-    return Buffer.from(b64, "base64").toString("utf8");
-  }
-
-  unsplashImageForPaintName(name) {
-    // no key, direct hotlink (good enough)
-    const q = encodeURIComponent(
-      `car paint ${String(name || "").trim()}`.slice(0, 80)
-    );
-    return `https://source.unsplash.com/600x400/?${q}`;
-  }
-
-  formatRupiah(n) {
-    const x = parseInt(n, 10) || 0;
-    return x.toLocaleString("id-ID");
+      .replace(/_/g, "/");
+    while (s.length % 4) s += "=";
+    return Buffer.from(s, "base64").toString("utf8");
   }
 
   // =========================
@@ -1136,26 +1256,101 @@ class MessageHandler {
     if (product.specifications)
       detail += `📋 **Spesifikasi:** ${product.specifications}\n`;
     if (product.category) detail += `📂 **Kategori:** ${product.category}\n`;
-    if (product.harga_jual)
-      detail += `💰 **Harga:** Rp ${this.formatRupiah(product.harga_jual)}\n`;
-    if (product.harga_pasang)
-      detail += `🧰 **Pasang:** Rp ${this.formatRupiah(
-        product.harga_pasang
-      )}\n`;
     return detail;
   }
 
   getDefaultProductImage(categoryName) {
     const defaultImages = {
-      ban: "https://picsum.photos/300/200?random=1",
-      oli: "https://picsum.photos/300/200?random=2",
-      lampu: "https://picsum.photos/300/200?random=3",
-      cat: "https://picsum.photos/300/200?random=4",
+      ban: "https://picsum.photos/1200/628?random=1",
+      oli: "https://picsum.photos/1200/628?random=2",
+      lampu: "https://picsum.photos/1200/628?random=3",
+      cat: "https://picsum.photos/1080/1080?random=4",
     };
     return (
       defaultImages[String(categoryName || "").toLowerCase()] ||
-      "https://picsum.photos/300/200?random=5"
+      "https://picsum.photos/1200/628?random=5"
     );
+  }
+
+  normalizeImageUrl(url) {
+    const u = String(url || "").trim();
+    if (!u) return "";
+
+    let directUrl = u;
+    const m1 = u.match(/drive\.google\.com\/file\/d\/([^/]+)/i);
+    if (m1)
+      directUrl = `https://drive.google.com/uc?export=download&id=${m1[1]}`;
+    const m2 = u.match(/drive\.google\.com\/open\?id=([^&]+)/i);
+    if (m2)
+      directUrl = `https://drive.google.com/uc?export=download&id=${m2[1]}`;
+    const m3 = u.match(/drive\.google\.com\/uc\?id=([^&]+)/i);
+    if (m3)
+      directUrl = `https://drive.google.com/uc?export=download&id=${m3[1]}`;
+    if (u.includes("dropbox.com")) {
+      directUrl = u
+        .replace("www.dropbox.com", "dl.dropboxusercontent.com")
+        .replace("?dl=0", "");
+    }
+
+    const encoded = encodeURIComponent(directUrl);
+    const cloudName = process.env.CLOUDINARY_CLOUD_NAME || "demo";
+    return `https://res.cloudinary.com/${cloudName}/image/fetch/c_pad,b_white,w_800,h_418/${encoded}`;
+  }
+
+  // =========================
+  // ✅ CAT: get all cat products (robust)
+  // =========================
+  async getAllCatProductsNormalized() {
+    try {
+      if (typeof sheetsService.getProductsByCategory === "function") {
+        const rows = await sheetsService.getProductsByCategory("cat");
+        return this.normalizeCatRows(rows);
+      }
+
+      let brands = [];
+      if (typeof sheetsService.getBrandsByCategory === "function") {
+        brands = (await sheetsService.getBrandsByCategory("cat")) || [];
+      } else if (typeof sheetsService.getBrandsForCategory === "function") {
+        brands = (await sheetsService.getBrandsForCategory("cat")) || [];
+      }
+
+      const out = [];
+      for (const b of brands) {
+        const rows = await sheetsService.getProductsByBrand("cat", b);
+        out.push(...(rows || []));
+      }
+      return this.normalizeCatRows(out);
+    } catch (e) {
+      console.error("getAllCatProductsNormalized error:", e?.message || e);
+      return [];
+    }
+  }
+
+  normalizeCatRows(rows) {
+    const arr = Array.isArray(rows) ? rows : [];
+    return arr
+      .map((r, idx) => {
+        const name = r?.name || r?.NAMA || r?.Nama || r?.nama || "";
+        const brand = r?.brand || r?.MERK || r?.Merk || r?.merk || "";
+        const id =
+          r?.id ||
+          r?.ID ||
+          r?.Id ||
+          (name
+            ? `${String(name).trim()}__${String(brand).trim()}__${idx}`
+            : `${idx}`);
+
+        return {
+          id: String(id),
+          name: String(name).trim(),
+          brand: String(brand).trim(),
+          image_url: r?.image_url || r?.IMAGE_URL || r?.img || null,
+          category: "cat",
+          specifications:
+            r?.specifications || r?.SPESIFIKASI || r?.spec || null,
+        };
+      })
+      .filter((p) => p.id && p.name);
   }
 
   // =========================
@@ -1215,7 +1410,7 @@ class MessageHandler {
     await this.callSendAPI({
       recipient: { id: senderId },
       message: {
-        text: "📂 Pilih kategori produk yang dicari:",
+        text: "📂 Pilih kategori produk yang dicari: (lihat bagian di atas kolom chat dan klik mana yang juragan tertarik)",
         quick_replies: quickReplies.slice(0, 13),
       },
     });
@@ -1252,7 +1447,7 @@ class MessageHandler {
   async sendHelpMessage(senderId) {
     await this.sendTextMessage(
       senderId,
-      "Ketik 'ban' untuk pilih ukuran ban, atau 'katalog' untuk menu. Untuk cat: ketik 'cat' lalu tulis warna 😄"
+      "Ketik 'ban' untuk pilih ukuran ban, atau 'katalog' untuk menu. Ketik 'lampu' untuk pilih TYPE LAMPU."
     );
   }
 
