@@ -404,29 +404,56 @@ class SheetsService {
   }
 
   convertGoogleDriveUrl(url) {
-    if (!url || typeof url !== "string") return "";
+    const u = String(url || "").trim();
+    if (!u) return "";
 
-    if (url.startsWith("http") && !url.includes("drive.google.com")) return url;
-    if (!url.includes("drive.google.com")) return "";
+    // Handle Google Drive URLs - extract file ID and convert to direct link
+    if (u.includes("drive.google.com")) {
+      let fileId = null;
 
-    let fileId = null;
-
-    let m = url.match(/\/d\/([a-zA-Z0-9-_]+)/);
-    if (m) fileId = m[1];
-
-    if (!fileId) {
-      m = url.match(/[?&]id=([a-zA-Z0-9-_]+)/);
+      // Match /d/{fileId} pattern
+      let m = u.match(/\/d\/([a-zA-Z0-9-_]+)/);
       if (m) fileId = m[1];
+
+      // Match /file/d/{fileId} pattern
+      if (!fileId) {
+        m = u.match(/\/file\/d\/([a-zA-Z0-9-_]+)/);
+        if (m) fileId = m[1];
+      }
+
+      // Match ?id={fileId} pattern
+      if (!fileId) {
+        m = u.match(/[?&]id=([a-zA-Z0-9-_]+)/);
+        if (m) fileId = m[1];
+      }
+
+      if (fileId) {
+        // Use thumbnail endpoint that works better with Facebook
+        return `https://drive.google.com/thumbnail?id=${fileId}&sz=w1000`;
+      }
     }
 
-    if (!fileId && url.includes("/uc?")) {
-      m = url.match(/[?&]id=([a-zA-Z0-9-_]+)/);
-      if (m) fileId = m[1];
+    // Handle Dropbox URLs
+    if (u.includes("dropbox.com")) {
+      return u
+        .replace("www.dropbox.com", "dl.dropboxusercontent.com")
+        .replace("?dl=0", "")
+        .replace("?dl=1", "");
     }
 
-    if (!fileId) return "";
+    // Handle Imgur URLs - ensure direct link
+    if (u.includes("imgur.com") && !u.includes("i.imgur.com")) {
+      const imgurId = u.match(/imgur\.com\/(\w+)/);
+      if (imgurId) return `https://i.imgur.com/${imgurId[1]}.jpg`;
+    }
 
-    return `https://lh3.googleusercontent.com/d/${fileId}=w1200`;
+    // If it's already a direct HTTP/HTTPS URL, return as-is
+    if (u.startsWith("http://") || u.startsWith("https://")) {
+      return u;
+    }
+
+    // If nothing matched, return empty (invalid URL)
+    return "";
   }
 
   // ===== Orders =====

@@ -201,6 +201,43 @@ class MessageHandler {
       return;
     }
 
+    // ⚡ SHORTCUT: "oli 1L", "oli 0.8L" -> go to oli pack directly
+    const oliMatch = textLower.match(/^oli\s*(\d+(?:\.\d+)?)\s*l?$/i);
+    if (oliMatch) {
+      const pack = oliMatch[1];
+      session.oliPack = pack;
+      session.state = "oli_show_pack";
+      await this.sendOliByPack(senderId, session, pack, 1);
+      return;
+    }
+
+    // ⚡ SHORTCUT: "cat merah", "cat biru" -> go to cat color directly
+    if (textLower.startsWith("cat ")) {
+      const color = rawText.substring(4).trim();
+      if (color) {
+        session.catColorQuery = color;
+        session.state = "cat_show_color";
+        await this.sendCatByColor(senderId, session, color, 1);
+        return;
+      }
+    }
+
+    // ⚡ SHORTCUT: Common lampu types like "H4", "T10", "LED" (2-6 chars alphanumeric)
+    // Only trigger if it's a short code that looks like a lamp type
+    if (/^[a-z0-9]{2,6}$/i.test(textLower) && !["ban", "oli", "cat", "menu", "help", "iya", "ya", "ok", "oke"].includes(textLower)) {
+      // Check if this matches any existing TYPE LAMPU
+      const typeLampuList = await sheetsService.getTypeLampuList();
+      const matchType = typeLampuList.find(
+        (t) => String(t).toLowerCase() === textLower
+      );
+      if (matchType) {
+        session.lampuType = matchType;
+        session.state = "lampu_show_type";
+        await this.sendLampuByType(senderId, session, matchType, 1);
+        return;
+      }
+    }
+
     // General commands
     if (textLower === "bantuan" || textLower === "help") {
       await this.sendHelpMessage(senderId);
@@ -550,7 +587,7 @@ class MessageHandler {
     if (safePage > 1) {
       quickReplies.push({
         content_type: "text",
-        title: "⬅️ Prev",
+        title: "◀️ Sebelumnya",
         payload: `UKURAN_BAN_PAGE_${safePage - 1}`,
       });
     }
@@ -574,7 +611,7 @@ class MessageHandler {
     if (safePage < totalPages) {
       quickReplies.push({
         content_type: "text",
-        title: "Next ➡️",
+        title: "Selanjutnya ▶️",
         payload: `UKURAN_BAN_PAGE_${safePage + 1}`,
       });
     }
@@ -591,8 +628,9 @@ class MessageHandler {
 
     await this.sendTextMessage(
       senderId,
-      `Pilih ukuran ban yang dicari:` +
-        (totalPages > 1 ? `\nHalaman ${safePage} dari ${totalPages}` : ""),
+      `🛞 Pilih ukuran ban yang dicari:` +
+        (totalPages > 1 ? `\n📄 Halaman ${safePage} dari ${totalPages}` : "") +
+        `\n\n⚡ TIPS: Bisa langsung ketik ukuran (contoh: "90/90-14")`,
       quickReplies.slice(0, 13)
     );
 
@@ -616,7 +654,7 @@ class MessageHandler {
     if (safePage > 1) {
       quickReplies.push({
         content_type: "text",
-        title: "⬅️ Prev",
+        title: "◀️ Sebelumnya",
         payload: `TYPE_LAMPU_PAGE_${safePage - 1}`,
       });
     }
@@ -632,7 +670,7 @@ class MessageHandler {
     if (safePage < totalPages) {
       quickReplies.push({
         content_type: "text",
-        title: "Next ➡️",
+        title: "Selanjutnya ▶️",
         payload: `TYPE_LAMPU_PAGE_${safePage + 1}`,
       });
     }
@@ -646,7 +684,8 @@ class MessageHandler {
     await this.sendTextMessage(
       senderId,
       `💡 Pilih TYPE LAMPU yang dicari:` +
-        (totalPages > 1 ? `\nHalaman ${safePage} dari ${totalPages}` : ""),
+        (totalPages > 1 ? `\n📄 Halaman ${safePage} dari ${totalPages}` : "") +
+        `\n\n⚡ TIPS: Bisa langsung ketik type (contoh: "H4", "T10")`,
       quickReplies.slice(0, 13)
     );
 
@@ -670,7 +709,7 @@ class MessageHandler {
     if (safePage > 1) {
       quickReplies.push({
         content_type: "text",
-        title: "⬅️ Prev",
+        title: "◀️ Sebelumnya",
         payload: `PACK_OLI_PAGE_${safePage - 1}`,
       });
     }
@@ -687,7 +726,7 @@ class MessageHandler {
     if (safePage < totalPages) {
       quickReplies.push({
         content_type: "text",
-        title: "Next ➡️",
+        title: "Selanjutnya ▶️",
         payload: `PACK_OLI_PAGE_${safePage + 1}`,
       });
     }
@@ -701,7 +740,8 @@ class MessageHandler {
     await this.sendTextMessage(
       senderId,
       `🛢️ Pilih **PACK** oli yang dicari:` +
-        (totalPages > 1 ? `\nHalaman ${safePage} dari ${totalPages}` : ""),
+        (totalPages > 1 ? `\n📄 Halaman ${safePage} dari ${totalPages}` : "") +
+        `\n\n⚡ TIPS: Bisa langsung ketik "oli 1L" atau "oli 0.8L"`,
       quickReplies.slice(0, 13)
     );
 
@@ -774,14 +814,14 @@ class MessageHandler {
       if (totalPages > 1 && safePage > 1) {
         quickReplies.push({
           content_type: "text",
-          title: "⬅️ Prev",
+          title: "◀️ Sebelumnya",
           payload: `LAMPU_TYPE_PAGE_${b64Type}_${safePage - 1}`,
         });
       }
       if (totalPages > 1 && safePage < totalPages) {
         quickReplies.push({
           content_type: "text",
-          title: "Next ➡️",
+          title: "Selanjutnya ▶️",
           payload: `LAMPU_TYPE_PAGE_${b64Type}_${safePage + 1}`,
         });
       }
@@ -882,14 +922,14 @@ class MessageHandler {
       if (totalPages > 1 && safePage > 1) {
         quickReplies.push({
           content_type: "text",
-          title: "⬅️ Prev",
+          title: "◀️ Sebelumnya",
           payload: `OLI_PACK_PAGE_${b64Pack}_${safePage - 1}`,
         });
       }
       if (totalPages > 1 && safePage < totalPages) {
         quickReplies.push({
           content_type: "text",
-          title: "Next ➡️",
+          title: "Selanjutnya ▶️",
           payload: `OLI_PACK_PAGE_${b64Pack}_${safePage + 1}`,
         });
       }
@@ -1003,7 +1043,7 @@ class MessageHandler {
         if (safePage > 1) {
           quickReplies.push({
             content_type: "text",
-            title: "⬅️ Prev",
+            title: "◀️ Sebelumnya",
             payload: `BAN_UKURAN_PAGE_${this.encodeUkuran(ukuran)}_${
               safePage - 1
             }`,
@@ -1012,7 +1052,7 @@ class MessageHandler {
         if (safePage < totalPages) {
           quickReplies.push({
             content_type: "text",
-            title: "Next ➡️",
+            title: "Selanjutnya ▶️",
             payload: `BAN_UKURAN_PAGE_${this.encodeUkuran(ukuran)}_${
               safePage + 1
             }`,
@@ -1155,14 +1195,14 @@ class MessageHandler {
       if (safePage > 1) {
         quickReplies.push({
           content_type: "text",
-          title: "⬅️ Prev",
+          title: "◀️ Sebelumnya",
           payload: `CAT_COLOR_PAGE_${b64Color}_${safePage - 1}`,
         });
       }
       if (safePage < totalPages) {
         quickReplies.push({
           content_type: "text",
-          title: "Next ➡️",
+          title: "Selanjutnya ▶️",
           payload: `CAT_COLOR_PAGE_${b64Color}_${safePage + 1}`,
         });
       }
@@ -1183,7 +1223,7 @@ class MessageHandler {
 
       await this.sendTextMessage(
         senderId,
-        `🎨 Hasil cat untuk warna **${userColor}** (${safePage}/${totalPages})${kwLine}\n\nKlik "Tertarik" untuk simpan pilihan. Ketik "selesai" untuk ringkasan.`,
+        `🎨 Hasil cat untuk warna **${userColor}**\n📄 Halaman ${safePage} dari ${totalPages}${kwLine}\n\nKlik "Tertarik" untuk simpan pilihan. Ketik "selesai" untuk ringkasan.`,
         quickReplies.slice(0, 13)
       );
 
@@ -1540,25 +1580,42 @@ class MessageHandler {
     const u = String(url || "").trim();
     if (!u) return "";
 
-    let directUrl = u;
-    const m1 = u.match(/drive\.google\.com\/file\/d\/([^/]+)/i);
-    if (m1)
-      directUrl = `https://drive.google.com/uc?export=download&id=${m1[1]}`;
-    const m2 = u.match(/drive\.google\.com\/open\?id=([^&]+)/i);
-    if (m2)
-      directUrl = `https://drive.google.com/uc?export=download&id=${m2[1]}`;
-    const m3 = u.match(/drive\.google\.com\/uc\?id=([^&]+)/i);
-    if (m3)
-      directUrl = `https://drive.google.com/uc?export=download&id=${m3[1]}`;
-    if (u.includes("dropbox.com")) {
-      directUrl = u
-        .replace("www.dropbox.com", "dl.dropboxusercontent.com")
-        .replace("?dl=0", "");
+    // Handle Google Drive URLs
+    if (u.includes("drive.google.com")) {
+      let fileId = null;
+      
+      // Match /d/{fileId} or /file/d/{fileId}
+      let m = u.match(/\/(?:file\/)?d\/([a-zA-Z0-9-_]+)/);
+      if (m) fileId = m[1];
+      
+      // Match ?id={fileId}
+      if (!fileId) {
+        m = u.match(/[?&]id=([a-zA-Z0-9-_]+)/);
+        if (m) fileId = m[1];
+      }
+      
+      if (fileId) {
+        // Use thumbnail endpoint that works with Facebook
+        return `https://drive.google.com/thumbnail?id=${fileId}&sz=w1000`;
+      }
     }
 
-    const encoded = encodeURIComponent(directUrl);
-    const cloudName = process.env.CLOUDINARY_CLOUD_NAME || "demo";
-    return `https://res.cloudinary.com/${cloudName}/image/fetch/c_pad,b_white,w_800,h_418/${encoded}`;
+    // Handle Dropbox URLs
+    if (u.includes("dropbox.com")) {
+      return u
+        .replace("www.dropbox.com", "dl.dropboxusercontent.com")
+        .replace("?dl=0", "")
+        .replace("?dl=1", "");
+    }
+
+    // Handle Imgur URLs
+    if (u.includes("imgur.com") && !u.includes("i.imgur.com")) {
+      const imgurId = u.match(/imgur\.com\/(\w+)/);
+      if (imgurId) return `https://i.imgur.com/${imgurId[1]}.jpg`;
+    }
+
+    // Return direct URL as-is (no Cloudinary proxy)
+    return u;
   }
 
   // =========================
@@ -1645,15 +1702,18 @@ class MessageHandler {
     const welcomeText = `Halo! 👋 Selamat datang di **Ban888 Auto Parts**!
 
 🛞 **Produk Kami:**
-• Ban motor
-• Lampu kendaraan  
-• Oli mesin
-• Cat kendaraan
+• Ban motor • Lampu kendaraan • Oli mesin • Cat kendaraan
 
-💬 **Cara Order:**
-• Ketik "katalog" untuk lihat semua kategori
-• Atau langsung cari produk (contoh: "ban corsa")
-• Klik tombol untuk order langsung!`;
+⚡ **Cara Cepat (Ketik Langsung):**
+📌 Ban: ketik ukuran → contoh: "90/90-14" atau "100/80-17"
+📌 Lampu: ketik "lampu" atau langsung type → contoh: "H4" atau "T10"
+📌 Oli: ketik "oli" atau langsung → contoh: "oli 1L"
+📌 Cat: ketik "cat" lalu warna → contoh: "merah" atau "silver"
+
+🔘 **Atau Pakai Menu:**
+Ketik "katalog" atau "menu" untuk lihat semua kategori
+
+❓ Butuh bantuan? Ketik "bantuan" atau "help"`;
     await this.sendTextMessage(senderId, welcomeText);
   }
 
@@ -1674,7 +1734,7 @@ class MessageHandler {
     await this.callSendAPI({
       recipient: { id: senderId },
       message: {
-        text: "📂 Pilih kategori produk yang dicari: (lihat bagian di atas kolom chat dan klik mana yang juragan tertarik)",
+        text: "📂 **KATALOG PRODUK**\n\nPilih kategori di bawah, atau ketik langsung:\n\n⚡ Ketik: \"ban\", \"lampu\", \"oli\", atau \"cat\"\n⚡ Atau langsung ukuran/type (contoh: \"90/90-14\", \"H4\")\n\n💡 Ketik \"bantuan\" untuk panduan lengkap",
         quick_replies: quickReplies.slice(0, 13),
       },
     });
@@ -1709,10 +1769,45 @@ class MessageHandler {
   }
 
   async sendHelpMessage(senderId) {
-    await this.sendTextMessage(
-      senderId,
-      "Ketik 'ban' untuk pilih ukuran ban, atau 'katalog' untuk menu. Ketik 'lampu' untuk pilih TYPE LAMPU. Ketik 'oli' untuk pilih PACK."
-    );
+    const helpText = `📖 **PANDUAN LENGKAP Ban888 Bot**
+
+⚡ **CARA CEPAT - Ketik Langsung:**
+
+🛞 **BAN:**
+   • Ketik ukuran langsung: "90/90-14", "100/80-17"
+   • Atau ketik "ban" untuk menu ukuran
+   • Gak tau ukuran? Ketik "ban" lalu pilih "Tidak Yakin"
+
+💡 **LAMPU:**
+   • Ketik "lampu" untuk pilih type
+   • Atau langsung ketik type: "H4", "T10", "LED"
+
+🛢️ **OLI:**
+   • Ketik "oli" untuk pilih ukuran pack
+   • Contoh pack: 0.8L, 1L, 4L
+
+🎨 **CAT:**
+   • Ketik "cat" lalu sebutkan warna
+   • Contoh: "merah", "biru", "silver metallic"
+
+📂 **MENU & PENCARIAN:**
+   • "katalog" atau "menu" - Lihat semua kategori
+   • "selesai" - Lihat ringkasan pilihan
+   • "bantuan" atau "help" - Tampilkan panduan ini
+
+💬 **TIPS:**
+✅ Bisa ketik langsung tanpa klik button!
+✅ Setelah pilih produk, klik "Tertarik" untuk simpan
+✅ Ketik "selesai" untuk lihat semua pilihan
+
+📞 **Kontak:**
+WhatsApp: ${process.env.SUPPORT_WHATSAPP || "081273574202"}`;
+    await this.sendTextMessage(senderId, helpText, [
+      { content_type: "text", title: "📂 Katalog", payload: "MAIN_MENU" },
+      { content_type: "text", title: "🛞 Ban", payload: "CATEGORY_BAN" },
+      { content_type: "text", title: "💡 Lampu", payload: "CATEGORY_LAMPU" },
+      { content_type: "text", title: "🛢️ Oli", payload: "CATEGORY_OLI" },
+    ]);
   }
 
   async handleAttachment(senderId, attachments, session) {
