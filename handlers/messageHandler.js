@@ -1645,7 +1645,7 @@ class MessageHandler {
     const welcomeText = `Halo! 👋 Selamat datang di **Ban888 Auto Parts**!
 
 🛞 **Produk Kami:**
-• Ban mobil & motor
+• Ban motor
 • Lampu kendaraan  
 • Oli mesin
 • Cat kendaraan

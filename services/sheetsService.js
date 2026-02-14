@@ -9,7 +9,7 @@ class SheetsService {
     this.sheetsId = process.env.GOOGLE_SHEETS_ID;
 
     this.categoryMap = {
-      Sheet_Ban: { name: "ban", display: "🛞 Ban Mobil & Motor", emoji: "🛞" },
+      Sheet_Ban: { name: "ban", display: "🛞 Ban Motor", emoji: "🛞" },
       Sheet_Lampu: {
         name: "lampu",
         display: "💡 Lampu Kendaraan",
