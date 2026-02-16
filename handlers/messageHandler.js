@@ -103,6 +103,24 @@ class MessageHandler {
       return;
     }
 
+    // ========== MOTOR TYPE DETECTION (GPT-POWERED) - PRIORITIZE BEFORE WIDTH ==========
+    // This prevents "Vario 150" from being detected as width 150
+    try {
+      const isMotorcycle = await gptService.isMotorcycleRelated(rawText);
+      if (isMotorcycle) {
+        session.motorType = rawText.trim();
+        session.state = "waiting_motor_position";
+        await this.sendTextMessage(senderId, "Ban depan atau belakang?", [
+          { content_type: "text", title: "Depan", payload: "MOTOR_DEPAN" },
+          { content_type: "text", title: "Belakang", payload: "MOTOR_BELAKANG" },
+        ]);
+        return;
+      }
+    } catch (error) {
+      console.error("Error in GPT motorcycle detection:", error);
+      // Continue to ban size detection if motor detection fails
+    }
+
     // ========== DIRECT BAN SIZE INPUT (INCOMPLETE - NO RING) ==========
     if (this.looksLikeIncompleteBanSize(rawText)) {
       const [size, ring] = this.parseBanSize(rawText);
@@ -217,23 +235,6 @@ class MessageHandler {
       session.motorPosition = null;
       await this.sendWelcomeMessage(senderId);
       return;
-    }
-
-    // ========== MOTOR TYPE DETECTION (GPT-POWERED) - PRIORITIZE ==========
-    try {
-      const isMotorcycle = await gptService.isMotorcycleRelated(rawText);
-      if (isMotorcycle) {
-        session.motorType = rawText.trim();
-        session.state = "waiting_motor_position";
-        await this.sendTextMessage(senderId, "Ban depan atau belakang?", [
-          { content_type: "text", title: "Depan", payload: "MOTOR_DEPAN" },
-          { content_type: "text", title: "Belakang", payload: "MOTOR_BELAKANG" },
-        ]);
-        return;
-      }
-    } catch (error) {
-      console.error("Error in GPT motorcycle detection:", error);
-      // Continue to confusion detection if motor detection fails
     }
 
     // ========== CONFUSION/UNCERTAINTY DETECTION ==========
@@ -1066,7 +1067,7 @@ class MessageHandler {
 
 Untuk order atau info lebih lanjut, klik link:
 📞 ${this.getWhatsAppLink()}
-📍 **Alamat:** Jl. Ikan Nila V No. 30, Bumi Waras, Bandar Lampung, Lampung
+📍 **Alamat:** https://maps.app.goo.gl/DCjy76XTXcPyKWdH9
 
 Sampai jumpa lagi, juragan! 👋`;
     
