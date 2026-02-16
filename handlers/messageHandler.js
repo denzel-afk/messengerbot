@@ -1354,17 +1354,10 @@ Sampai jumpa lagi, juragan! 👋`;
       await this.sendTextMessage(senderId, text, quickReplies);
     } catch (error) {
       console.error("Error in showMotorRecommendations:", error);
-      // Reset session on error and ask user to input manually
+      // Reset session on error
       session.state = null;
       session.motorType = null;
       session.motorPosition = null;
-      
-      await this.sendTextMessage(
-        senderId,
-        error.message || "Maaf, ada kendala teknis. Boleh ketik manual ukuran ban yang juragan cari? Contoh: 80/90-14"
-      );
-    }
-  }
       await this.sendTextMessage(senderId, `Maaf, ada error saat mengecek rekomendasi 😔\n\nBisa ketik ukuran ban langsung? Contoh: 80/90-14`);
     }
   }
