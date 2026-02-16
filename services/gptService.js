@@ -9,7 +9,7 @@ async function getUkuranBanByMotor(motor, posisi) {
   const prompt = `Berikan ukuran ban motor untuk motor ${motor} pada posisi ${posisi}. Jawab dengan format: "Ukuran ban motor ${motor} pada posisi ${posisi} adalah [ukuran ban]."`;
   try {
     const response = await openai.chat.completions.create({
-      model: "gpt-4o-mini",
+      model: "gpt-4o",
       messages: [
         {
           role: "system",
@@ -198,7 +198,7 @@ CARA CEPAT yang bisa user lakukan:
 
   try {
     const response = await openai.chat.completions.create({
-      model: "gpt-4o-mini",
+      model: "gpt-4o",
       messages: [
         { role: "system", content: systemPrompt },
         { role: "user", content: userMessage }
@@ -238,7 +238,7 @@ Upsize: XX/XX-XX`;
 
   try {
     const response = await openai.chat.completions.create({
-      model: "gpt-4o-mini",
+      model: "gpt-4o",
       messages: [
         {
           role: "system",
@@ -298,7 +298,7 @@ HANYA angka, tidak perlu penjelasan.`;
 
   try {
     const response = await openai.chat.completions.create({
-      model: "gpt-4o-mini",
+      model: "gpt-4o",
       messages: [
         {
           role: "system",
@@ -334,7 +334,7 @@ HANYA ukuran ban dipisah koma, tidak perlu penjelasan.`;
 
   try {
     const response = await openai.chat.completions.create({
-      model: "gpt-4o-mini",
+      model: "gpt-4o",
       messages: [
         {
           role: "system",
@@ -376,7 +376,7 @@ Jawab HANYA dengan angka, atau "NONE" jika tidak ada.`;
 
   try {
     const response = await openai.chat.completions.create({
-      model: "gpt-4o-mini",
+      model: "gpt-4o",
       messages: [
         {
           role: "system",
@@ -410,7 +410,7 @@ Jawab HANYA dengan angka, atau "NONE" jika tidak ada.`;
 async function extractBanSizeFromText(text) {
   try {
     const response = await openai.chat.completions.create({
-      model: "gpt-4o-mini",
+      model: "gpt-4o",
       messages: [
         {
           role: "system",
@@ -449,7 +449,7 @@ Jika tidak ada ukuran ban, jawab: NONE`
 async function extractRingSizeFromText(text) {
   try {
     const response = await openai.chat.completions.create({
-      model: "gpt-4o-mini",
+      model: "gpt-4o",
       messages: [
         {
           role: "system",
@@ -509,7 +509,7 @@ async function isBanRelated(text) {
   // Use GPT for more nuanced questions
   try {
     const response = await openai.chat.completions.create({
-      model: "gpt-4o-mini",
+      model: "gpt-4o",
       messages: [
         {
           role: "system",
@@ -570,7 +570,7 @@ async function isGreeting(text) {
   // Use GPT for variations
   try {
     const response = await openai.chat.completions.create({
-      model: "gpt-4o-mini",
+      model: "gpt-4o",
       messages: [
         {
           role: "system",
@@ -625,7 +625,7 @@ async function isMotorcycleRelated(text) {
   // Use GPT for ANY motorcycle type/model detection
   try {
     const response = await openai.chat.completions.create({
-      model: "gpt-4o-mini",
+      model: "gpt-4o",
       messages: [
         {
           role: "system",
@@ -680,7 +680,7 @@ async function isConfused(text) {
   // Use GPT for more nuanced confusion detection
   try {
     const response = await openai.chat.completions.create({
-      model: "gpt-4o-mini",
+      model: "gpt-4o",
       messages: [
         {
           role: "system",
