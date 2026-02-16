@@ -61,14 +61,14 @@ app.get("/health/detailed", async (req, res) => {
       webhook: webhookHandler.getWebhookHealth(),
       sheets: {
         configured: !!process.env.GOOGLE_SHEETS_ID,
-        credentials_path: process.env.GOOGLE_CREDENTIALS_PATH,
+        credentials_source: process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL ? 'environment_variables' : 'local_file',
       },
       environment: {
         page_access_token: !!process.env.PAGE_ACCESS_TOKEN,
         verify_token: !!process.env.VERIFY_TOKEN,
         app_secret: !!process.env.APP_SECRET,
         google_sheets_id: !!process.env.GOOGLE_SHEETS_ID,
-        google_credentials: !!process.env.GOOGLE_CREDENTIALS_PATH,
+        google_credentials: !!(process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL && process.env.GOOGLE_PRIVATE_KEY),
       },
     };
 
