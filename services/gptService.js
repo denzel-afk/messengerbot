@@ -218,16 +218,23 @@ CARA CEPAT yang bisa user lakukan:
 // BAN: GPT ukuran ban recommendations (standard + upsize)
 // =========================
 async function getBanRecommendationsForMotor(motor, posisi) {
-  const prompt = `Berikan ukuran ban untuk motor ${motor} pada posisi ${posisi}.
+  const posisiText = posisi?.toLowerCase().includes("depan") ? "depan" : "belakang";
+  
+  const prompt = `Kamu adalah ahli ban motor Indonesia. Berikan rekomendasi ukuran ban ${posisiText} untuk motor ${motor}.
 
-1. Ukuran standar pabrikan
-2. Satu opsi upsize
+PENTING:
+- Ban depan biasanya LEBIH KECIL dari ban belakang
+- Contoh: Yamaha NMAX depan 110/70-13, belakang 130/70-13
+- Contoh: Honda Beat depan 70/90-14, belakang 80/90-14
+- Contoh: Yamaha R15 depan 100/80-17, belakang 140/70-17
 
-Jawab dengan format:
+Berikan:
+1. Ukuran standar pabrikan untuk ban ${posisiText}
+2. Satu opsi upsize (lebar +10mm atau +20mm)
+
+Format WAJIB:
 Standar: XX/XX-XX
-Upsize: XX/XX-XX
-
-Jangan kasih penjelasan lain.`;
+Upsize: XX/XX-XX`;
 
   try {
     const response = await openai.chat.completions.create({
@@ -235,15 +242,16 @@ Jangan kasih penjelasan lain.`;
       messages: [
         {
           role: "system",
-          content: "Kamu adalah asisten yang memberikan rekomendasi ukuran ban motor. Berikan ukuran standar dan satu upsize. Format: Standar: XX/XX-XX, Upsize: XX/XX-XX",
+          content: `Kamu adalah ahli ban motor Indonesia. PASTIKAN ban ${posisiText} sesuai dengan standar pabrikan. Ban depan LEBIH KECIL dari belakang. Jawab HANYA format: Standar: XX/XX-XX, Upsize: XX/XX-XX`,
         },
         { role: "user", content: prompt },
       ],
-      max_tokens: 50,
-      temperature: 0.5,
+      max_tokens: 80,
+      temperature: 0.3,
     });
 
     const content = response.choices[0].message.content.trim();
+    console.log(`[GPT] Ban recommendations for ${motor} ${posisiText}: ${content}`);
     
     // Extract sizes from the response
     const sizeMatches = content.match(/\d{2,3}\/\d{2,3}-\d{2}/g) || [];
@@ -274,15 +282,8 @@ Jangan kasih penjelasan lain.`;
   } catch (error) {
     console.error("Error fetching ban recommendations:", error?.message || error);
     
-    // Fallback: return generic recommendations
-    const standardSize = posisi?.toLowerCase().includes("depan") ? "70/90-14" : "80/90-14";
-    const upsizeSize = posisi?.toLowerCase().includes("depan") ? "80/90-14" : "90/90-14";
-    
-    return {
-      standard: { size: standardSize, label: "📏 Standar" },
-      upsize: { size: upsizeSize, label: "⬆️ Upsize" },
-      sizes: [standardSize, upsizeSize]
-    };
+    // Better fallback: ask user to specify manually
+    throw new Error("Maaf, Bella tidak bisa memberikan rekomendasi otomatis untuk motor ini. Ketik manual ukuran ban yang juragan cari, contoh: 80/90-14");
   }
 }
 
