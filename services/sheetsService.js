@@ -70,9 +70,20 @@ class SheetsService {
 
   async initialize() {
     try {
-      const credentials = JSON.parse(
-        fs.readFileSync("./data/credentials.json", "utf8")
-      );
+      // Use environment variables if available (production), otherwise read from file (local)
+      let credentials;
+      if (process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL && process.env.GOOGLE_PRIVATE_KEY) {
+        credentials = {
+          client_email: process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL,
+          private_key: process.env.GOOGLE_PRIVATE_KEY.replace(/\\n/g, '\n'), // Handle escaped newlines
+        };
+        console.log("Using Google credentials from environment variables");
+      } else {
+        credentials = JSON.parse(
+          fs.readFileSync("./data/credentials.json", "utf8")
+        );
+        console.log("Using Google credentials from local file");
+      }
 
       const serviceAccountAuth = new JWT({
         email: credentials.client_email,
