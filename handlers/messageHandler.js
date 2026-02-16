@@ -12,6 +12,13 @@ class MessageHandler {
     return process.env.SUPPORT_WHATSAPP || "081273574202";
   }
 
+  getWhatsAppLink() {
+    const number = this.getWhatsAppNumber();
+    // Convert 08xxx to 628xxx for international format
+    const internationalNumber = number.startsWith('0') ? '62' + number.substring(1) : number;
+    return `https://wa.me/${internationalNumber}`;
+  }
+
   cleanupSessions() {
     const now = Date.now();
     const timeout = 24 * 60 * 60 * 1000;
@@ -762,7 +769,7 @@ class MessageHandler {
         // Not ban-related - simple don't understand
         await this.sendTextMessage(
           senderId,
-          `Maaf, Bella kurang paham. Untuk info lebih lanjut hubungi:\n📞 WhatsApp: ${this.getWhatsAppNumber()}`
+          `Maaf, Bella kurang paham. Untuk info lebih lanjut klik link:\n📞 ${this.getWhatsAppLink()}`
         );
       }
     } catch (error) {
@@ -770,7 +777,7 @@ class MessageHandler {
       // Fallback: simple don't understand
       await this.sendTextMessage(
         senderId,
-        `Maaf, Bella kurang paham. Untuk info lebih lanjut hubungi:\n📞 WhatsApp: ${this.getWhatsAppNumber()}`
+        `Maaf, Bella kurang paham. Untuk info lebih lanjut klik link:\n📞 ${this.getWhatsAppLink()}`
       );
     }
   }
@@ -928,9 +935,9 @@ class MessageHandler {
         if (productData.harga_pasang) {
           const hargaPasangDisplay = productData.harga_pasang * 1000;
           priceText += `\n🔧 **Harga Pasang: Rp ${hargaPasangDisplay.toLocaleString('id-ID')}**\n`;
-          priceText += `\n🛒 Untuk pembelian, hubungi:\n📞 WhatsApp: ${this.getWhatsAppNumber()}\n`;
+          priceText += `\n🛒 Untuk pembelian, klik link:\n📞 ${this.getWhatsAppLink()}\n`;
         } else {
-          priceText += `\n💬 Untuk info harga terbaru, hubungi:\n📞 WhatsApp: ${this.getWhatsAppNumber()}\n`;
+          priceText += `\n💬 Untuk info harga terbaru, klik link:\n📞 ${this.getWhatsAppLink()}\n`;
         }
         
         await this.sendTextMessage(senderId, priceText, [
@@ -943,7 +950,7 @@ class MessageHandler {
         console.error("Error handling CEK_HARGA:", error);
         // Reset session on error
         session.state = null;
-        await this.sendTextMessage(senderId, `Maaf, ada error saat mengecek harga 😔\n\nUntuk info harga, hubungi:\n📞 WhatsApp: ${this.getWhatsAppNumber()}`);
+        await this.sendTextMessage(senderId, `Maaf, ada error saat mengecek harga 😔\n\nUntuk info harga, klik link:\n📞 ${this.getWhatsAppLink()}`);
       }
       return;
     }
@@ -1057,8 +1064,8 @@ class MessageHandler {
   async sendFinishMessage(senderId) {
     const finishText = `Terima kasih sudah menggunakan layanan Bella! 😊
 
-Untuk order atau info lebih lanjut, hubungi:
-📞 **WhatsApp:** ${this.getWhatsAppNumber()}
+Untuk order atau info lebih lanjut, klik link:
+📞 ${this.getWhatsAppLink()}
 📍 **Alamat:** Jl. Ikan Nila V No. 30, Bumi Waras, Bandar Lampung, Lampung
 
 Sampai jumpa lagi, juragan! 👋`;
@@ -1251,7 +1258,7 @@ Sampai jumpa lagi, juragan! 👋`;
       // Send purchase info
       await this.sendTextMessage(
         senderId,
-        `🛒 Untuk pembelian, hubungi:\n📞 WhatsApp: ${this.getWhatsAppNumber()}`
+        `🛒 Untuk pembelian, klik link di bawah:\n📞 WhatsApp: ${this.getWhatsAppLink()}`
       );
 
       // Ask what's next
@@ -1365,7 +1372,7 @@ Sampai jumpa lagi, juragan! 👋`;
   async handleAttachment(senderId, attachments, session) {
     await this.sendTextMessage(
       senderId,
-      `Terima kasih! Untuk order, silakan hubungi WhatsApp kami 😊\n\n📞 WhatsApp: ${this.getWhatsAppNumber()}`,
+      `Terima kasih! Untuk order, klik link WhatsApp di bawah 😊\n\n📞 ${this.getWhatsAppLink()}`,
       [
         { content_type: "text", title: "🔍 Lihat Ban", payload: "LIAT_LAGI" },
       ]
