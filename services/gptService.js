@@ -286,6 +286,123 @@ Jangan kasih penjelasan lain.`;
   }
 }
 
+async function getRecommendedRingSizes(banSize) {
+  const prompt = `Untuk ukuran ban motor ${banSize}, sebutkan 2-3 ukuran ring (velg) yang paling umum digunakan.
+
+Format jawaban: hanya angka ring dipisah koma.
+Contoh: 14, 17
+Contoh: 10, 12, 14
+
+HANYA angka, tidak perlu penjelasan.`;
+
+  try {
+    const response = await openai.chat.completions.create({
+      model: "gpt-4o-mini",
+      messages: [
+        {
+          role: "system",
+          content: "Kamu adalah asisten yang memberikan rekomendasi ukuran ring/velg motor berdasarkan ukuran ban. Jawab HANYA dengan angka ring dipisah koma.",
+        },
+        { role: "user", content: prompt },
+      ],
+      max_tokens: 20,
+      temperature: 0.3,
+    });
+
+    const content = response.choices[0].message.content.trim();
+    console.log(`[GPT] Ring recommendations for ${banSize}: ${content}`);
+    
+    // Extract numbers from the response
+    const rings = content.match(/\d{2}/g) || [];
+    return rings.slice(0, 3); // Return max 3 recommendations
+  } catch (error) {
+    console.error("Error getting ring recommendations:", error?.message || error);
+    // Return common defaults
+    return ["14", "17"];
+  }
+}
+
+async function getCompleteBanSizeFromWidth(width) {
+  const prompt = `User kasih lebar ban cuma ${width}. Sebutkan 2-3 ukuran ban motor yang paling umum dengan lebar luar ${width}.
+
+Format: XX/XX saja (tanpa ring)
+Contoh untuk 80: 80/80, 80/90
+Contoh untuk 100: 100/70, 100/80
+
+HANYA ukuran ban dipisah koma, tidak perlu penjelasan.`;
+
+  try {
+    const response = await openai.chat.completions.create({
+      model: "gpt-4o-mini",
+      messages: [
+        {
+          role: "system",
+          content: "Kamu memberikan rekomendasi ukuran ban lengkap berdasarkan lebar luar yang diberikan user. Jawab dengan format XX/XX dipisah koma, maksimal 3 opsi.",
+        },
+        { role: "user", content: prompt },
+      ],
+      max_tokens: 30,
+      temperature: 0.3,
+    });
+
+    const content = response.choices[0].message.content.trim();
+    console.log(`[GPT] Complete sizes for width ${width}: ${content}`);
+    
+    // Extract sizes like "80/90" from response
+    const sizes = content.match(/\d{2,3}\/\d{2,3}/g) || [];
+    return sizes.slice(0, 3); // Return max 3 recommendations
+  } catch (error) {
+    console.error("Error getting complete ban size:", error?.message || error);
+    // Return common defaults based on width
+    const w = parseInt(width);
+    if (w >= 100) return [`${width}/80`, `${width}/90`];
+    if (w >= 90) return [`${width}/80`, `${width}/90`];
+    return [`${width}/90`, `${width}/100`];
+  }
+}
+
+async function extractWidthFromText(text) {
+  const prompt = `User menyebut lebar ban dalam kalimat: "${text}"
+
+Ekstrak HANYA angka lebar ban (biasanya 60-140, tapi ekstrak apapun angka yang disebut). 
+Contoh:
+- "saya mau ban 120" → 120
+- "cari ban 80" → 80
+- "ban depan 100" → 100
+- "ban 150" → 150
+
+Jawab HANYA dengan angka, atau "NONE" jika tidak ada.`;
+
+  try {
+    const response = await openai.chat.completions.create({
+      model: "gpt-4o-mini",
+      messages: [
+        {
+          role: "system",
+          content: "Kamu mengekstrak angka lebar ban dari kalimat user. Jawab HANYA dengan angka atau NONE. Ekstrak angka apapun yang disebut user sebagai lebar ban.",
+        },
+        { role: "user", content: prompt },
+      ],
+      max_tokens: 10,
+      temperature: 0.1,
+    });
+
+    const content = response.choices[0].message.content.trim();
+    console.log(`[GPT] Width extraction from "${text}": ${content}`);
+    
+    // Extract number from response (don't validate range here, let handler decide)
+    const match = content.match(/(\d{2,3})/);
+    if (match) {
+      return match[1]; // Return width as string regardless of validity
+    }
+    
+    return null;
+  } catch (error) {
+    console.error("Error extracting width:", error?.message || error);
+    return null;
+  }
+}
+
 // =========================
 // EXTRACT BAN SIZE FROM TEXT
 // =========================
@@ -430,12 +547,187 @@ Jawab HANYA: NO jika tidak berhubungan dengan ban motor.`
   }
 }
 
+async function isGreeting(text) {
+  const normalized = String(text || "").toLowerCase().trim();
+  
+  // Quick check: common greetings
+  const greetingPatterns = [
+    /^(hi|hai|hey|hello|halo|hallo|helo)\b/i,
+    /^(pagi|siang|sore|malam)\b/i,
+    /^selamat\s+(pagi|siang|sore|malam)/i,
+    /^(assalamualaikum|assalamu'alaikum|salam)\b/i,
+    /^(permisi|gan|juragan|bro|sis|kak|mas|mbak)\b/i,
+    /^(start|mulai)\b/i,
+    /^(good\s+(morning|afternoon|evening|night))/i,
+  ];
+  
+  // If any pattern matches, it's definitely a greeting
+  if (greetingPatterns.some(regex => regex.test(normalized))) {
+    return true;
+  }
+  
+  // Use GPT for variations
+  try {
+    const response = await openai.chat.completions.create({
+      model: "gpt-4o-mini",
+      messages: [
+        {
+          role: "system",
+          content: `Tentukan apakah teks berikut adalah sapaan/greeting atau bukan.
+
+Sapaan/greeting termasuk:
+- Salam pembuka: hai, halo, hello, hi, hey
+- Salam waktu: selamat pagi, pagi, good morning, selamat siang, sore, malam
+- Salam agama: assalamualaikum, salam
+- Permisi, gan, juragan, bro, sis, kak, mas, mbak
+- Ungkapan ingin memulai: start, mulai, mau tanya
+
+Bukan sapaan:
+- Pertanyaan tentang produk
+- Angka atau ukuran
+- Nama merek
+- Kalimat yang berisi pertanyaan atau request
+
+Jawab HANYA: YES jika ini sapaan/greeting.
+Jawab HANYA: NO jika bukan sapaan.`
+        },
+        { role: "user", content: text }
+      ],
+      temperature: 0.1,
+      max_tokens: 10,
+    });
+
+    const answer = (response.choices[0]?.message?.content || "").trim().toUpperCase();
+    return answer.startsWith("YES");
+  } catch (error) {
+    console.error("Error in GPT greeting detection:", error);
+    return false;  // Default to not greeting on error
+  }
+}
+
+async function isMotorcycleRelated(text) {
+  const normalized = String(text || "").toLowerCase().trim();
+  
+  // Quick check: common motorcycle brands and models for instant detection
+  const quickMotorPatterns = [
+    /\b(yamaha|honda|suzuki|kawasaki)\b/i,
+    /\b(vario|beat|scoopy|pcx|mio|nmax|aerox)\b/i,
+    /\b(vixion|jupiter|soul|force|rx|cb|cbr|ninja)\b/i,
+    /\b(satria|smash|shogun|tiger|megapro|supra|sonic|revo)\b/i,
+  ];
+  
+  // If any pattern matches, it's definitely a motorcycle
+  if (quickMotorPatterns.some(regex => regex.test(normalized))) {
+    return true;
+  }
+  
+  // Use GPT for ANY motorcycle type/model detection
+  try {
+    const response = await openai.chat.completions.create({
+      model: "gpt-4o-mini",
+      messages: [
+        {
+          role: "system",
+          content: `Tentukan apakah teks berikut menyebut atau menanyakan tentang tipe/model motor/sepeda motor atau bukan.
+
+YANG TERMASUK motor:
+- Merek motor: Yamaha, Honda, Suzuki, Kawasaki, Vespa, Piaggio, dll
+- Model motor: Beat, Vario, Scoopy, Mio, NMAX, PCX, Aerox, CBR, Ninja, Vixion, Jupiter, Soul, Satria, Smash, Shogun, Tiger, Supra, dll
+- Tipe motor apapun, termasuk motor jadul, motor sport, motor matic, bebek, dll
+- Pertanyaan tentang motor contoh: "motor saya", "motorku", "untuk motor X"
+
+YANG BUKAN motor:
+- Hanya angka/ukuran ban tanpa menyebut motor
+- Sapaan/greeting
+- Warna atau merek ban
+- Pertanyaan umum tentang produk
+
+Jawab HANYA: YES jika teks menyebut tipe/model motor.
+Jawab HANYA: NO jika tidak ada motor yang disebut.`
+        },
+        { role: "user", content: text }
+      ],
+      temperature: 0.1,
+      max_tokens: 10,
+    });
+
+    const answer = (response.choices[0]?.message?.content || "").trim().toUpperCase();
+    console.log(`[GPT] Motorcycle detection for "${text}": ${answer}`);
+    return answer.startsWith("YES");
+  } catch (error) {
+    console.error("Error in GPT motorcycle detection:", error);
+    return false;  // Default to not motorcycle on error
+  }
+}
+
+async function isConfused(text) {
+  const normalized = String(text || "").toLowerCase().trim();
+  
+  // Quick check: common confusion phrases for instant detection
+  const confusionPatterns = [
+    /\b(ga?\s*tau|gak\s*tau|tidak\s*tau|gatau|gaktau|gk\s*tau|g\s*tau)\b/i,
+    /\b(entah|bingung|dunno|don'?t\s*know|idk|nda\s*tau|ndak\s*tau)\b/i,
+    /\b(kurang\s*paham|gak\s*ngerti|ga\s*ngerti|nggak\s*ngerti|tidak\s*tahu)\b/i,
+    /\b(gimana|bagaimana|apa\s*ya|yang\s*mana|mana\s*ya)\b/i,
+  ];
+  
+  // If any pattern matches, it's definitely confusion
+  if (confusionPatterns.some(pattern => pattern.test(normalized))) {
+    return true;
+  }
+  
+  // Use GPT for more nuanced confusion detection
+  try {
+    const response = await openai.chat.completions.create({
+      model: "gpt-4o-mini",
+      messages: [
+        {
+          role: "system",
+          content: `Tentukan apakah user sedang bingung, tidak tahu, atau tidak yakin tentang sesuatu.
+
+YANG TERMASUK kebingungan/ketidaktahuan:
+- Tidak tahu: "ga tau", "gak tau", "gatau", "entah", "tidak tahu", "idk", "dunno"
+- Bingung: "bingung", "kurang paham", "gak ngerti", "ga ngerti", "nggak ngerti"
+- Tidak yakin: "gimana ya", "bagaimana ya", "apa ya", "yang mana", "mana ya"
+- Pertanyaan karena tidak tahu: "gimana caranya", "harus apa", "caranya gimana"
+- Ungkapan kebingungan lainnya yang menunjukkan user tidak tahu informasi
+
+YANG BUKAN kebingungan:
+- Pertanyaan spesifik tentang produk
+- Menyebut ukuran ban atau motor
+- Salam atau greeting
+- Permintaan yang jelas
+
+Jawab HANYA: YES jika user bingung/tidak tahu.
+Jawab HANYA: NO jika bukan kebingungan.`
+        },
+        { role: "user", content: text }
+      ],
+      temperature: 0.1,
+      max_tokens: 10,
+    });
+
+    const answer = (response.choices[0]?.message?.content || "").trim().toUpperCase();
+    console.log(`[GPT] Confusion detection for "${text}": ${answer}`);
+    return answer.startsWith("YES");
+  } catch (error) {
+    console.error("Error in GPT confusion detection:", error);
+    return false;  // Default to not confused on error
+  }
+}
+
 module.exports = {
   getUkuranBanByMotor,
   matchCatProductsByColor,
   getConversationalResponse,
   getBanRecommendationsForMotor,
+  getRecommendedRingSizes,
+  getCompleteBanSizeFromWidth,
+  extractWidthFromText,
   extractBanSizeFromText,
   extractRingSizeFromText,
   isBanRelated,
+  isGreeting,
+  isMotorcycleRelated,
+  isConfused,
 };
