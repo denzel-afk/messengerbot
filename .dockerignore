@@ -1,0 +1,7 @@
+node_modules/
+.env
+data/credentials.json
+*.log
+.DS_Store
+dist/
+build/
