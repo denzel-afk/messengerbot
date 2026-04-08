@@ -47,7 +47,7 @@ console.log("4️⃣ TESTING SCENARIOS:");
 console.log(
   '   🔤 Send "hello" → Should get welcome message + category buttons'
 );
-console.log('   🛞 Tap "Ban Mobil & Motor" → Should get 13 brand buttons');
+console.log('   🛞 Tap "Ban Motor" → Should get 13 brand buttons');
 console.log('   🏷️ Tap "ASPIRA" → Should get product carousel');
 console.log('   📋 Tap "Detail" → Should get product details');
 console.log('   🛒 Tap "Order" → Should start order flow (name → phone)');
@@ -74,7 +74,7 @@ console.log("===========================");
 console.log('User: "hello" or "hi"');
 console.log("Bot: Welcome message + 4 category quick reply buttons");
 console.log("");
-console.log('User: Taps "🛞 Ban Mobil & Motor"');
+console.log('User: Taps "🛞 Ban Motor"');
 console.log("Bot: Brand selection message + 13 brand quick reply buttons");
 console.log("");
 console.log('User: Taps "ASPIRA"');

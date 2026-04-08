@@ -1,4 +1,4 @@
-// MessageHandler.js
+// MessageHandler.js - Simplified BAN-only version
 const sheetsService = require("../services/sheetsService");
 const facebookAPI = require("../services/facebookAPI");
 const gptService = require("../services/gptService");
@@ -6,6 +6,17 @@ const gptService = require("../services/gptService");
 class MessageHandler {
   constructor() {
     this.userSessions = new Map();
+  }
+
+  getWhatsAppNumber() {
+    return process.env.SUPPORT_WHATSAPP || "081273574202";
+  }
+
+  getWhatsAppLink() {
+    const number = this.getWhatsAppNumber();
+    // Convert 08xxx to 628xxx for international format
+    const internationalNumber = number.startsWith('0') ? '62' + number.substring(1) : number;
+    return `https://wa.me/${internationalNumber}`;
   }
 
   cleanupSessions() {
@@ -53,11 +64,27 @@ class MessageHandler {
 
       await this.sendTextMessage(
         senderId,
-        "Maaf, saya tidak mengerti format pesan tersebut 😅"
+        "Maaf, Bella tidak mengerti format pesan tersebut 😅"
       );
     } catch (error) {
-      console.error("Error handling message:", error?.message || error);
-      await this.sendTextMessage(senderId, "Maaf, ada error. Coba lagi ya! 🙏");
+      console.error("❌ Error handling message:");
+      console.error("Error name:", error?.name);
+      console.error("Error message:", error?.message);
+      console.error("Error stack:", error?.stack);
+      
+      // Reset session on error
+      const session = this.userSessions.get(senderId);
+      if (session) {
+        session.state = null;
+        session.banSize = null;
+        session.banRing = null;
+        session.banUkuran = null;
+        session.banBrandPattern = null;
+        session.banSearchQuery = null;
+        session.motorType = null;
+        session.motorPosition = null;
+      }
+      await this.sendTextMessage(senderId, "Maaf, ada error. Coba lagi ya! 🙏\n\nKetik ukuran ban atau tipe motor untuk mulai lagi.");
     }
   }
 
@@ -68,152 +95,692 @@ class MessageHandler {
     const rawText = String(text || "");
     const textLower = rawText.toLowerCase().trim();
 
-    // katalog/menu/produk/categories (ALWAYS check first)
-    if (["katalog", "menu", "produk", "categories"].includes(textLower)) {
-      await this.sendCategoryMenu(senderId);
+    // ========== DIRECT BAN SIZE INPUT (COMPLETE) - CHECK FIRST ==========
+    if (this.looksLikeCompleteBanSize(rawText)) {
+      session.banUkuran = this.normalizeBanSize(rawText);
+      session.state = "show_products";
+      await this.showBanProducts(senderId, session);
       return;
     }
 
-    // selesai
-    if (textLower === "selesai") {
-      if (session.selectedProducts && session.selectedProducts.length > 0) {
-        let summary = "📋 **Ringkasan Pilihanmu:**\n";
-        session.selectedProducts.forEach((p, i) => {
-          summary += `${i + 1}. ${p.name} (${p.brand || "-"})\n`;
-        });
-        summary += `\nSilakan screenshot daftar ini dan hubungi kami:\n☎️ WhatsApp: ${
-          process.env.SUPPORT_WHATSAPP || "081273574202"
-        }\n📍 Alamat: Jl. Ikan Nila V No. 30, Bumi Waras, Bandar Lampung, Lampung`;
-        await this.sendTextMessage(senderId, summary);
-        // Reset session after selesai
-        this.userSessions.delete(senderId);
+    // ========== MOTOR TYPE DETECTION (GPT-POWERED) - PRIORITIZE BEFORE WIDTH ==========
+    // This prevents "Vario 150" from being detected as width 150
+    try {
+      const isMotorcycle = await gptService.isMotorcycleRelated(rawText);
+      if (isMotorcycle) {
+        session.motorType = rawText.trim();
+        session.state = "waiting_motor_position";
+        await this.sendTextMessage(senderId, "Ban depan atau belakang?", [
+          { content_type: "text", title: "Depan", payload: "MOTOR_DEPAN" },
+          { content_type: "text", title: "Belakang", payload: "MOTOR_BELAKANG" },
+        ]);
+        return;
+      }
+    } catch (error) {
+      console.error("Error in GPT motorcycle detection:", error);
+      // Continue to ban size detection if motor detection fails
+    }
+
+    // ========== DIRECT BAN SIZE INPUT (INCOMPLETE - NO RING) ==========
+    if (this.looksLikeIncompleteBanSize(rawText)) {
+      const [size, ring] = this.parseBanSize(rawText);
+      session.banSize = size;
+      session.banRing = ring;
+      
+      if (!ring) {
+        session.state = "waiting_ring";
+        await this.askForRingSize(senderId, session);
+        return;
       } else {
+        session.banUkuran = `${size}-${ring}`;
+        session.state = "show_products";
+        await this.showBanProducts(senderId, session);
+        return;
+      }
+    }
+
+    // ========== WIDTH-ONLY INPUT (flexible detection) ==========
+    // Try simple pattern first: "80", "90", "100"
+    let extractedWidth = null;
+    let invalidWidth = false;
+    
+    const singleWidthMatch = rawText.match(/^\s*(\d{2,3})\s*$/);
+    if (singleWidthMatch) {
+      const widthNum = parseInt(singleWidthMatch[1]);
+      if (widthNum >= 60 && widthNum <= 140) {
+        extractedWidth = singleWidthMatch[1];
+      } else {
+        // Width out of reasonable range
+        invalidWidth = true;
+      }
+    }
+    
+    // If simple match fails, try GPT extraction from natural language
+    if (!extractedWidth && !invalidWidth) {
+      try {
+        // Try to extract width from phrases like "saya mau ban 120", "cari ban 80"
+        const gptWidth = await gptService.extractWidthFromText(rawText);
+        if (gptWidth) {
+          const widthNum = parseInt(gptWidth);
+          if (widthNum >= 60 && widthNum <= 140) {
+            extractedWidth = gptWidth;
+          } else {
+            invalidWidth = true;
+          }
+        }
+      } catch (error) {
+        console.error("Error extracting width from text:", error);
+      }
+    }
+    
+    // Handle invalid width
+    if (invalidWidth) {
+      await this.sendTextMessage(
+        senderId,
+        "Hmm, Bella kurang paham dengan ukuran tersebut 😅\n\nBoleh kasih ukuran ban yang lebih jelas?\n\nContoh:\n• 80/90-14\n• 100/80-17\n• atau tipe motor: Yamaha Mio, Honda Beat"
+      );
+      return;
+    }
+    
+    // If width is extracted and valid, show recommendations
+    if (extractedWidth) {
+      try {
+        await this.sendTypingOn(senderId);
+        
+        // Get GPT recommendations for complete sizes
+        const recommendedSizes = await gptService.getCompleteBanSizeFromWidth(extractedWidth);
+        
+        if (recommendedSizes.length > 0) {
+          const sizeButtons = recommendedSizes.map(size => ({
+            content_type: "text",
+            title: size,
+            payload: `SIZE_${size}`
+          }));
+          
+          await this.sendTextMessage(
+            senderId, 
+            `Oh ban ${extractedWidth} ya! Biasanya ukuran ban dengan lebar luar ${extractedWidth} adalah:\n\n${recommendedSizes.map((s, i) => `${i + 1}. ${s}`).join('\n')}\n\nPilih salah satu atau ketik ukuran lengkap:`,
+            sizeButtons
+          );
+          return;
+        } else {
+          // No recommendations found for this width
+          await this.sendTextMessage(
+            senderId,
+            `Maaf, Bella tidak menemukan ukuran ban untuk lebar ${extractedWidth} 😔\n\nBoleh coba ketik ukuran lengkap atau tipe motor?\n\nContoh:\n• 80/90-14\n• Yamaha Mio\n• Honda Beat`
+          );
+          return;
+        }
+      } catch (error) {
+        console.error("Error getting complete ban size:", error);
+      }
+    }
+
+    // ========== SELESAI ==========
+    if (textLower === "selesai") {
+      await this.sendFinishMessage(senderId);
+      this.userSessions.delete(senderId);
+      return;
+    }
+
+    // ========== LIAT LAGI ==========
+    if (["liat lagi", "lihat lagi", "cari lagi", "ulang"].includes(textLower)) {
+      session.state = null;
+      session.banSize = null;
+      session.banRing = null;
+      session.banUkuran = null;
+      session.banBrandPattern = null;
+      session.banSearchQuery = null;
+      session.motorType = null;
+      session.motorPosition = null;
+      await this.sendWelcomeMessage(senderId);
+      return;
+    }
+
+    // ========== CONFUSION/UNCERTAINTY DETECTION ==========
+    const confusionPatterns = [
+      /\b(ga?\s*tau|gak\s*tau|tidak\s*tau|gatau|gaktau|gk\s*tau|g\s*tau)\b/i,
+      /\b(entah|bingung|dunno|don'?t\s*know|idk|nda\s*tau|ndak\s*tau)\b/i,
+      /\b(kurang\s*paham|gak\s*ngerti|ga\s*ngerti|nggak\s*ngerti|tidak\s*tahu)\b/i,
+      /\b(gimana|bagaimana|apa\s*ya|yang\s*mana|mana\s*ya)\b/i,
+    ];
+    
+    let isConfused = confusionPatterns.some(pattern => pattern.test(textLower));
+    
+    // If pattern doesn't match, try GPT for nuanced confusion detection
+    if (!isConfused) {
+      try {
+        isConfused = await gptService.isConfused(rawText);
+      } catch (error) {
+        console.error("Error in GPT confusion detection:", error);
+        // Continue if GPT fails
+      }
+    }
+    
+    if (isConfused) {
+      session.state = null;
+      session.banSize = null;
+      session.banRing = null;
+      session.banUkuran = null;
+      session.banBrandPattern = null;
+      session.banSearchQuery = null;
+      session.motorType = null;
+      session.motorPosition = null;
+      
+      await this.sendTextMessage(
+        senderId, 
+        "Gak apa-apa juragan! Kalau bingung ukuran ban nya, bisa kasih tau nama motornya aja 😊\n\nContoh:\n• Honda Beat\n• Yamaha Mio\n• Suzuki Nex\n• atau motor lainnya"
+      );
+      return;
+    }
+
+    // ========== STATE: WAITING FOR RING SIZE ==========
+    if (session.state === "waiting_ring") {
+      // Extract number from user's message
+      let extractedNumber = this.extractRingSize(rawText);
+      
+      // If direct extraction fails, try GPT
+      if (!extractedNumber) {
+        try {
+          extractedNumber = await gptService.extractRingSizeFromText(rawText);
+          if (extractedNumber) {
+            console.log(`GPT extracted ring number: ${extractedNumber} from "${rawText}"`);
+          }
+        } catch (error) {
+          console.error("Error in GPT ring size extraction:", error);
+        }
+      }
+      
+      if (extractedNumber) {
+        // Get available ring sizes for this ban size
+        try {
+          const allBanProducts = await sheetsService.getProductsByCategory("ban");
+          const availableRings = new Set();
+          
+          allBanProducts.forEach(product => {
+            const spec = String(product.specifications || product.SPESIFIKASI || "");
+            if (spec.includes(session.banSize)) {
+              const match = spec.match(new RegExp(`${session.banSize.replace(/\//g, "\\/")}-(\\d{2})`));
+              if (match) {
+                availableRings.add(match[1]);
+              }
+            }
+          });
+
+          const availableRingsArray = Array.from(availableRings);
+          
+          // Match extracted number with available rings - EXACT MATCH ONLY
+          let matchedRing = null;
+          
+          if (availableRingsArray.includes(extractedNumber)) {
+            // Exact match found
+            matchedRing = extractedNumber;
+          }
+          
+          if (matchedRing) {
+            session.banRing = matchedRing;
+            session.banUkuran = `${session.banSize}-${matchedRing}`;
+            session.state = "show_products";
+            await this.showBanProducts(senderId, session);
+            return;
+          } else {
+            // No exact match - ask for correct ring size
+            if (availableRingsArray.length > 0) {
+              const ringList = availableRingsArray.join(", ");
+              await this.sendTextMessage(senderId, `Maaf, ring ${extractedNumber} tidak tersedia untuk ban ${session.banSize} 😔\n\nRing yang tersedia: ${ringList}\n\nSilakan pilih salah satu atau ketik ring yang benar.`);
+              return;
+            } else {
+              // No available rings at all
+              await this.sendTextMessage(senderId, `Maaf, tidak ada ring yang tersedia untuk ban ${session.banSize} 😔\n\nKetik ulang ukuran ban atau tipe motor yang juragan cari.`);
+              session.state = null;
+              session.banSize = null;
+              return;
+            }
+          }
+        } catch (error) {
+          console.error("Error matching ring size:", error);
+          // On error, ask user to try again
+          await this.sendTextMessage(senderId, "Maaf, ada error. Boleh ketik ukuran ring lagi? Contoh: 14, 17, 10");
+          return;
+        }
+      } else {
+        // Check if user provided motorcycle info instead of ring size
+        try {
+          const isMotorcycle = await gptService.isMotorcycleRelated(rawText);
+          if (isMotorcycle) {
+            session.motorType = rawText.trim();
+            session.banSize = null;  // Reset ban size
+            session.banRing = null;
+            
+            // Check if position is mentioned in the text
+            const positionKeywords = {
+              depan: ["depan", "front", "ban depan", "roda depan"],
+              belakang: ["belakang", "back", "rear", "ban belakang", "roda belakang"]
+            };
+            
+            let detectedPosition = null;
+            for (const [pos, keywords] of Object.entries(positionKeywords)) {
+              if (keywords.some(kw => textLower.includes(kw))) {
+                detectedPosition = pos;
+                break;
+              }
+            }
+            
+            if (detectedPosition) {
+              // Position detected, go directly to show recommendations
+              session.motorPosition = detectedPosition;
+              session.state = "showing_motor_recommendations";
+              await this.showMotorRecommendations(senderId, session);
+              return;
+            } else {
+              // Ask for position
+              session.state = "waiting_motor_position";
+              await this.sendTextMessage(senderId, "Ban depan atau belakang?", [
+                { content_type: "text", title: "Depan", payload: "MOTOR_DEPAN" },
+                { content_type: "text", title: "Belakang", payload: "MOTOR_BELAKANG" },
+              ]);
+              return;
+            }
+          }
+        } catch (error) {
+          console.error("Error in motorcycle detection for ring size:", error);
+        }
+        
+        await this.sendTextMessage(senderId, "Maaf, Bella kurang paham. Boleh ketik ukuran ring saja? Contoh: 14, 17, 10");
+        return;
+      }
+    }
+
+    // ========== STATE: WAITING FOR BRAND SIZE ==========
+    if (session.state === "waiting_brand_size") {
+      // Check if user provided complete or incomplete size
+      if (this.looksLikeCompleteBanSize(rawText)) {
+        session.banUkuran = this.normalizeBanSize(rawText);
+        session.banSearchQuery = session.banBrandPattern; // Use brand pattern for filtering
+        session.state = "show_products";
+        await this.showBanProducts(senderId, session);
+        return;
+      } else if (this.looksLikeIncompleteBanSize(rawText)) {
+        const [size, ring] = this.parseBanSize(rawText);
+        session.banSize = size;
+        session.banRing = ring;
+        
+        if (!ring) {
+          session.state = "waiting_ring";
+          await this.askForRingSize(senderId, session);
+          return;
+        } else {
+          session.banUkuran = `${size}-${ring}`;
+          session.banSearchQuery = session.banBrandPattern;
+          session.state = "show_products";
+          await this.showBanProducts(senderId, session);
+          return;
+        }
+      } else {
+        // Try GPT extraction
+        try {
+          const extractedSize = await gptService.extractBanSizeFromText(rawText);
+          if (extractedSize) {
+            console.log(`GPT extracted ban size: ${extractedSize} from "${rawText}"`);
+            
+            if (this.looksLikeCompleteBanSize(extractedSize)) {
+              session.banUkuran = this.normalizeBanSize(extractedSize);
+              session.banSearchQuery = session.banBrandPattern;
+              session.state = "show_products";
+              await this.showBanProducts(senderId, session);
+              return;
+            } else if (this.looksLikeIncompleteBanSize(extractedSize)) {
+              const [size, ring] = this.parseBanSize(extractedSize);
+              session.banSize = size;
+              session.banRing = ring;
+              if (!ring) {
+                session.state = "waiting_ring";
+                await this.askForRingSize(senderId, session);
+                return;
+              } else {
+                session.banUkuran = `${size}-${ring}`;
+                session.banSearchQuery = session.banBrandPattern;
+                session.state = "show_products";
+                await this.showBanProducts(senderId, session);
+                return;
+              }
+            }
+          }
+        } catch (error) {
+          console.error("Error in GPT extraction for brand size:", error);
+        }
+        
+        // Check if user provided motorcycle info instead of ban size
+        try {
+          const isMotorcycle = await gptService.isMotorcycleRelated(rawText);
+          if (isMotorcycle) {
+            session.motorType = rawText.trim();
+            
+            // Check if position is mentioned in the text
+            const positionKeywords = {
+              depan: ["depan", "front", "ban depan", "roda depan"],
+              belakang: ["belakang", "back", "rear", "ban belakang", "roda belakang"]
+            };
+            
+            let detectedPosition = null;
+            for (const [pos, keywords] of Object.entries(positionKeywords)) {
+              if (keywords.some(kw => textLower.includes(kw))) {
+                detectedPosition = pos;
+                break;
+              }
+            }
+            
+            if (detectedPosition) {
+              // Position detected, go directly to show recommendations
+              session.motorPosition = detectedPosition;
+              session.state = "showing_motor_recommendations";
+              // Preserve brand pattern if it was set
+              await this.showMotorRecommendations(senderId, session);
+              return;
+            } else {
+              // Ask for position
+              session.state = "waiting_motor_position";
+              await this.sendTextMessage(senderId, "Ban depan atau belakang?", [
+                { content_type: "text", title: "Depan", payload: "MOTOR_DEPAN" },
+                { content_type: "text", title: "Belakang", payload: "MOTOR_BELAKANG" },
+              ]);
+              return;
+            }
+          }
+        } catch (error) {
+          console.error("Error in motorcycle detection for brand size:", error);
+        }
+        
+        await this.sendTextMessage(senderId, "Maaf, Bella kurang paham. Bisa ketik ukuran ban? Contoh: 80/90-14");
+        return;
+      }
+    }
+
+    // ========== STATE: MOTOR TYPE INPUT ==========
+    if (session.state === "waiting_motor_type") {
+      session.motorType = rawText.trim();
+      session.state = "waiting_motor_position";
+      await this.sendTextMessage(senderId, "Ban depan atau belakang?", [
+        { content_type: "text", title: "Depan", payload: "MOTOR_DEPAN" },
+        { content_type: "text", title: "Belakang", payload: "MOTOR_BELAKANG" },
+      ]);
+      return;
+    }
+
+    // ========== STATE: MOTOR POSITION INPUT ==========
+    if (session.state === "waiting_motor_position") {
+      const pos = textLower.includes("depan") ? "depan" : textLower.includes("belakang") ? "belakang" : null;
+      if (pos) {
+        session.motorPosition = pos;
+        session.state = "showing_motor_recommendations";
+        await this.showMotorRecommendations(senderId, session);
+        return;
+      } else {
+        await this.sendTextMessage(senderId, "Pilih 'depan' atau 'belakang' ya juragan", [
+          { content_type: "text", title: "Depan", payload: "MOTOR_DEPAN" },
+          { content_type: "text", title: "Belakang", payload: "MOTOR_BELAKANG" },
+        ]);
+        return;
+      }
+    }
+
+    // ========== STATE: USER CHOOSES SIZE AFTER MOTOR RECOMMENDATION ==========
+    if (session.state === "showing_motor_recommendations") {
+      if (this.looksLikeCompleteBanSize(rawText)) {
+        session.banUkuran = this.normalizeBanSize(rawText);
+        session.state = "show_products";
+        await this.showBanProducts(senderId, session);
+        return;
+      } else if (this.looksLikeIncompleteBanSize(rawText)) {
+        const [size, ring] = this.parseBanSize(rawText);
+        session.banSize = size;
+        session.banRing = ring;
+        if (!ring) {
+          session.state = "waiting_ring";
+          await this.askForRingSize(senderId, session);
+          return;
+        } else {
+          session.banUkuran = `${size}-${ring}`;
+          session.state = "show_products";
+          await this.showBanProducts(senderId, session);
+          return;
+        }
+      } else {
+        // Try GPT extraction before giving up
+        try {
+          const extractedSize = await gptService.extractBanSizeFromText(rawText);
+          if (extractedSize) {
+            console.log(`GPT extracted ban size in motor recommendations: ${extractedSize} from "${rawText}"`);
+            
+            if (this.looksLikeCompleteBanSize(extractedSize)) {
+              session.banUkuran = this.normalizeBanSize(extractedSize);
+              session.state = "show_products";
+              await this.showBanProducts(senderId, session);
+              return;
+            } else if (this.looksLikeIncompleteBanSize(extractedSize)) {
+              const [size, ring] = this.parseBanSize(extractedSize);
+              session.banSize = size;
+              session.banRing = ring;
+              if (!ring) {
+                session.state = "waiting_ring";
+                await this.askForRingSize(senderId, session);
+                return;
+              } else {
+                session.banUkuran = `${size}-${ring}`;
+                session.state = "show_products";
+                await this.showBanProducts(senderId, session);
+                return;
+              }
+            }
+          }
+        } catch (error) {
+          console.error("Error in GPT extraction in motor recommendations:", error);
+        }
+        
+        await this.sendTextMessage(senderId, "Bella kurang paham, bisa ketik ukuran ban yang juragan mau? Contoh: 80/90-14 atau pilih dari rekomendasi di atas");
+        return;
+      }
+    }
+
+    // ========== STATE: AFTER SHOWING PRODUCTS ==========
+    if (session.state === "after_products") {
+      if (["liat lagi", "lihat lagi", "cari lagi"].includes(textLower)) {
+        session.state = null;
+        await this.sendWelcomeMessage(senderId);
+        return;
+      }
+      if (textLower === "selesai") {
+        await this.sendFinishMessage(senderId);
+        this.userSessions.delete(senderId);
+        return;
+      }
+      
+      // If from motor flow, offer depan lagi/belakang/selesai
+      if (session.motorType) {
+        if (["depan lagi", "liat depan lagi"].includes(textLower)) {
+          session.motorPosition = "depan";
+          session.state = "showing_motor_recommendations";
+          await this.showMotorRecommendations(senderId, session);
+          return;
+        }
+        if (["belakang", "liat belakang", "yang belakang"].includes(textLower)) {
+          session.motorPosition = "belakang";
+          session.state = "showing_motor_recommendations";
+          await this.showMotorRecommendations(senderId, session);
+          return;
+        }
+      }
+    }
+
+    // ========== STATE: AFTER PRICE CHECK ==========
+    if (session.state === "after_price_check") {
+      if (["liat lagi", "lihat lagi", "liat-liat lagi", "cari lagi"].includes(textLower)) {
+        session.state = null;
+        await this.sendWelcomeMessage(senderId);
+        return;
+      }
+      if (textLower === "selesai") {
+        await this.sendFinishMessage(senderId);
+        this.userSessions.delete(senderId);
+        return;
+      }
+    }
+
+    // ========== TRY GPT EXTRACTION FOR BAN SIZE ==========
+    // If text doesn't match direct patterns but might contain a size like "ban 90/90" or "saya cari 80/90"
+    if (!this.looksLikeCompleteBanSize(rawText) && !this.looksLikeIncompleteBanSize(rawText)) {
+      try {
+        const extractedSize = await gptService.extractBanSizeFromText(rawText);
+        if (extractedSize) {
+          console.log(`GPT extracted ban size: ${extractedSize} from "${rawText}"`);
+          
+          // Check if it's complete or incomplete
+          if (this.looksLikeCompleteBanSize(extractedSize)) {
+            session.banUkuran = this.normalizeBanSize(extractedSize);
+            session.state = "show_products";
+            await this.showBanProducts(senderId, session);
+            return;
+          } else if (this.looksLikeIncompleteBanSize(extractedSize)) {
+            const [size, ring] = this.parseBanSize(extractedSize);
+            session.banSize = size;
+            session.banRing = ring;
+            
+            if (!ring) {
+              session.state = "waiting_ring";
+              await this.askForRingSize(senderId, session);
+              return;
+            } else {
+              session.banUkuran = `${size}-${ring}`;
+              session.state = "show_products";
+              await this.showBanProducts(senderId, session);
+              return;
+            }
+          }
+        }
+      } catch (error) {
+        console.error("Error in GPT ban size extraction:", error);
+        // Continue to brand/pattern detection
+      }
+    }
+
+    // ========== BRAND/PATTERN DETECTION ==========
+    const brandPatternKeywords = [
+      // Brands
+      "aspira", "fdr", "corsa", "irc", "maxxis", "michelin", 
+      "pirelli", "dunlop", "swallow", "zeneos", "mizzle",
+      // Patterns
+      "platinum", "diamond", "sportivo", "strada", "evoluzion",
+      "battlax", "tubeless", "r46", "r26", "r93", "victra", 
+      "pilot", "city", "scooter", "sport", "touring"
+    ];
+    const containsBrandPattern = brandPatternKeywords.some(kw => textLower.includes(kw));
+    
+    if (containsBrandPattern) {
+      // Find which brand/pattern was mentioned
+      const mentioned = brandPatternKeywords.find(kw => textLower.includes(kw));
+      session.banBrandPattern = mentioned;
+      session.state = "waiting_brand_size";
+      
+      // Capitalize first letter for display
+      const displayName = mentioned.charAt(0).toUpperCase() + mentioned.slice(1);
+      await this.sendTextMessage(senderId, `Ah mau ban ${displayName}, ukuran berapa juragan?\n\nContoh: 80/90-14`);
+      return;
+    }
+    
+    // ========== GPT-BASED BRAND/PATTERN DETECTION (FALLBACK) ==========
+    // If text doesn't match known patterns, try GPT to detect if it's a brand/pattern name
+    if (textLower.length <= 20 && !textLower.includes('/') && !textLower.includes('-')) {
+      try {
+        const allBanProducts = await sheetsService.getProductsByCategory("ban");
+        const allBrands = new Set();
+        const allPatterns = new Set();
+        
+        allBanProducts.forEach(product => {
+          const brand = String(product.brand || product.MERK || "").toLowerCase().trim();
+          const pattern = String(product.pattern || product.PATTERN || "").toLowerCase().trim();
+          
+          if (brand) allBrands.add(brand);
+          if (pattern) allPatterns.add(pattern);
+        });
+        
+        // Check if user's text matches any brand or pattern from sheets
+        const matchedBrand = Array.from(allBrands).find(b => 
+          textLower.includes(b) || b.includes(textLower)
+        );
+        const matchedPattern = Array.from(allPatterns).find(p => 
+          textLower.includes(p) || p.includes(textLower)
+        );
+        
+        if (matchedBrand || matchedPattern) {
+          const matched = matchedBrand || matchedPattern;
+          session.banBrandPattern = matched;
+          session.state = "waiting_brand_size";
+          
+          // Capitalize first letter for display
+          const displayName = matched.charAt(0).toUpperCase() + matched.slice(1);
+          await this.sendTextMessage(senderId, `Ah mau ban ${displayName}, ukuran berapa juragan?\n\nContoh: 80/90-14`);
+          return;
+        }
+      } catch (error) {
+        console.error("Error in brand/pattern detection:", error);
+        // Continue to greeting detection
+      }
+    }
+
+    // ========== GREETING DETECTION ==========
+    const greetings = [
+      "halo", "hello", "hai", "hi", "hey", "hallo", "helo",
+      "selamat pagi", "pagi", "selamat siang", "siang",
+      "selamat sore", "sore", "selamat malam", "malam",
+      "assalamualaikum", "assalamu'alaikum", "salam",
+      "permisi", "gan", "juragan", "bro", "sis",
+      "start", "mulai"
+    ];
+    
+    if (greetings.includes(textLower)) {
+      await this.sendWelcomeMessage(senderId);
+      return;
+    }
+
+    // ========== GPT GREETING DETECTION (FALLBACK) ==========
+    // For greeting variations not in the hardcoded list
+    try {
+      const isGreeting = await gptService.isGreeting(rawText);
+      if (isGreeting) {
+        await this.sendWelcomeMessage(senderId);
+        return;
+      }
+    } catch (error) {
+      console.error("Error in GPT greeting detection:", error);
+      // Continue to next checks
+    }
+
+    // ========== DEFAULT: DON'T UNDERSTAND ==========
+    // Check if message is related to tires/ban
+    try {
+      const isBanRelated = await gptService.isBanRelated(rawText);
+      
+      if (isBanRelated) {
+        // Ban-related but we don't understand - friendly response
         await this.sendTextMessage(
           senderId,
-          "Kamu belum memilih produk apapun. Silakan pilih produk terlebih dahulu."
+          `Ah iya, kita menyediakan ban! Mau ban apa?\n\n• Ketik ukuran ban (contoh: 80/90-14)\n• Atau ketik tipe motor (contoh: Yamaha Mio)`
         );
-      }
-      return;
-    }
-
-    // BAN: start size flow
-    if (textLower === "ban") {
-      await this.sendUkuranBanMenu(senderId, 1, session);
-      return;
-    }
-
-    // ✅ LAMPU: start TYPE LAMPU flow (simple pick-pick)
-    if (textLower === "lampu") {
-      await this.sendTypeLampuMenu(senderId, 1, session);
-      return;
-    }
-
-    // ✅ OLI: start PACK flow
-    if (textLower === "oli") {
-      await this.sendPackOliMenu(senderId, 1, session);
-      return;
-    }
-
-    // CAT: allow direct typing "cat"
-    if (textLower === "cat") {
-      session.state = "cat_ask_color";
-      await this.sendTextMessage(
-        senderId,
-        "🎨 Suka warna apa, juragan? (contoh: merah, biru, blue, silver, abu)"
-      );
-      return;
-    }
-
-    // ✅ CAT: user answers color after we asked
-    if (session.state === "cat_ask_color") {
-      const color = rawText.trim();
-      if (!color) {
+      } else {
+        // Not ban-related - simple don't understand
         await this.sendTextMessage(
           senderId,
-          "Warna nya apa, juragan? (contoh: biru / navy / silver)"
+          `Maaf, Bella kurang paham. Untuk info lebih lanjut klik link:\n📞 ${this.getWhatsAppLink()}`
         );
-        return;
       }
-      session.catColorQuery = color;
-      session.state = "cat_show_color";
-      await this.sendCatByColor(senderId, session, color, 1);
-      return;
-    }
-
-    // user types ukuran directly
-    if (this.looksLikeUkuranBan(textLower)) {
-      const ukuran = rawText.trim();
-      session.banUkuran = ukuran;
-      session.state = "ban_show_ukuran";
-      await this.sendBanByUkuran(senderId, session, ukuran, 1);
-      return;
-    }
-
-    // "Tidak Yakin" flow: user replies motor name
-    if (session.state === "ban_tanya_motor") {
-      session.banMotorQuery = rawText.trim();
-      session.state = "ban_tanya_posisi";
-      await this.sendTextMessage(senderId, "Ban depan atau belakang?");
-      return;
-    }
-
-    // Setelah user jawab posisi:
-    if (session.state === "ban_tanya_posisi") {
-      session.banPosisi = rawText.trim();
-
-      let ukuran = await gptService.getUkuranBanByMotor(
-        session.banMotorQuery,
-        session.banPosisi
-      );
-
-      const match = String(ukuran || "").match(/(\d{2,3}\/\d{2,3}-\d{2,3})/);
-      if (match) ukuran = match[1];
-
-      session.banUkuran = ukuran;
-      session.state = "ban_konfirmasi_ukuran";
+    } catch (error) {
+      console.error("Error checking ban-related:", error);
+      // Fallback: simple don't understand
       await this.sendTextMessage(
         senderId,
-        `Ukuran standar untuk ${session.banMotorQuery} (${session.banPosisi}): ${ukuran}\nMau cari ban ukuran ini? (balas "iya" untuk lanjut, atau ketik ukuran lain)`
+        `Maaf, Bella kurang paham. Untuk info lebih lanjut klik link:\n📞 ${this.getWhatsAppLink()}`
       );
-      return;
     }
-
-    // Konfirmasi setelah rekomendasi ukuran
-    if (session.state === "ban_konfirmasi_ukuran") {
-      if (
-        ["iya", "ya", "oke", "ok", "y", "sip", "lanjut"].includes(textLower)
-      ) {
-        session.state = "ban_show_ukuran";
-        await this.sendBanByUkuran(senderId, session, session.banUkuran, 1);
-        return;
-      }
-      if (this.looksLikeUkuranBan(textLower)) {
-        const ukuran = rawText.trim();
-        session.banUkuran = ukuran;
-        session.state = "ban_show_ukuran";
-        await this.sendBanByUkuran(senderId, session, ukuran, 1);
-        return;
-      }
-      await this.sendTextMessage(
-        senderId,
-        `Balas "iya" untuk cari ban ukuran ${session.banUkuran}, atau ketik ukuran lain.`
-      );
-      return;
-    }
-
-    // General commands
-    if (textLower === "bantuan" || textLower === "help") {
-      await this.sendHelpMessage(senderId);
-      return;
-    }
-
-    if (textLower.startsWith("cari ") || textLower.startsWith("search ")) {
-      const searchTerm = rawText.substring(5);
-      await this.searchAndSendProducts(senderId, searchTerm);
-      return;
-    }
-
-    await this.searchAndSendProducts(senderId, rawText);
   }
 
   // =========================
@@ -223,251 +790,123 @@ class MessageHandler {
     payload = String(payload || "");
     console.log(`🔘 Quick reply from ${senderId}: ${payload}`);
 
-    // ---------- CAT: PAGINATION (NEXT/PREV) ----------
-    if (payload.startsWith("CAT_COLOR_PAGE_")) {
-      // Format: CAT_COLOR_PAGE_<b64Color>_<page>
-      const rest = payload.replace("CAT_COLOR_PAGE_", "");
-      const parts = rest.split("_");
-      const page = parseInt(parts[parts.length - 1], 10) || 1;
-      const b64Color = parts.slice(0, -1).join("_");
-      const colorQuery = this.decodeTextPayload(b64Color);
-
-      session.state = "cat_show_color";
-      session.catColorQuery = colorQuery;
-      await this.sendCatByColor(senderId, session, colorQuery, page);
+    // ---------- BAN SIZE FROM RECOMMENDATIONS ----------
+    if (payload.startsWith("BAN_SIZE_")) {
+      const size = payload.replace("BAN_SIZE_", "").replace(/_/g, "/").replace(/~/g, "-");
+      session.banUkuran = size;
+      session.state = "show_products";
+      await this.showBanProducts(senderId, session);
       return;
     }
 
-    // ---------- BAN: PAGE SIZE MENU ----------
-    if (payload.startsWith("UKURAN_BAN_PAGE_")) {
-      const page = parseInt(payload.replace("UKURAN_BAN_PAGE_", ""), 10) || 1;
-      await this.sendUkuranBanMenu(senderId, page, session);
+    // ---------- SIZE FROM WIDTH RECOMMENDATION (e.g., SIZE_80/90) ----------
+    if (payload.startsWith("SIZE_")) {
+      const size = payload.replace("SIZE_", "");
+      session.banSize = size;
+      session.state = "waiting_ring";
+      await this.askForRingSize(senderId, session);
       return;
     }
 
-    // ---------- BAN: PAGE PRODUCTS BY UKURAN ----------
-    if (payload.startsWith("BAN_UKURAN_PAGE_")) {
-      const rest = payload.replace("BAN_UKURAN_PAGE_", "");
-      const parts = rest.split("_");
-      const page = parseInt(parts[parts.length - 1], 10) || 1;
-      const encodedUkuran = parts.slice(0, -1).join("_");
-      const ukuran = this.decodeUkuran(encodedUkuran);
-
-      session.banUkuran = ukuran;
-      session.state = "ban_show_ukuran";
-      await this.sendBanByUkuran(senderId, session, ukuran, page);
+    // ---------- RING SIZE FROM RECOMMENDATIONS ----------
+    if (payload.startsWith("RING_")) {
+      const ring = payload.replace("RING_", "");
+      session.banRing = ring;
+      session.banUkuran = `${session.banSize}-${ring}`;
+      session.state = "show_products";
+      await this.showBanProducts(senderId, session);
       return;
     }
 
-    // ---------- BAN: BACK TO UKURAN LIST ----------
-    if (payload === "BAN_PILIH_UKURAN") {
-      await this.sendUkuranBanMenu(senderId, 1, session);
+    // ---------- MOTOR POSITION ----------
+    if (payload === "MOTOR_DEPAN") {
+      session.motorPosition = "depan";
+      session.state = "showing_motor_recommendations";
+      await this.showMotorRecommendations(senderId, session);
       return;
     }
 
-    // ---------- BAN: TIDAK YAKIN ----------
-    if (payload === "UKURAN_BAN_TIDAK_YAKIN") {
-      await this.sendTextMessage(
-        senderId,
-        "Oke, boleh beri tau motormu apa, juragan?"
-      );
-      session.state = "ban_tanya_motor";
+    if (payload === "MOTOR_BELAKANG") {
+      session.motorPosition = "belakang";
+      session.state = "showing_motor_recommendations";
+      await this.showMotorRecommendations(senderId, session);
       return;
     }
 
-    // ---------- BAN: SELECT UKURAN ----------
-    if (payload.startsWith("UKURAN_BAN_")) {
-      const encoded = payload.replace("UKURAN_BAN_", "");
-      const ukuran = this.decodeUkuran(encoded);
-
-      session.banUkuran = ukuran;
-      session.state = "ban_show_ukuran";
-      await this.sendBanByUkuran(senderId, session, ukuran, 1);
+    // ---------- MOTOR SIZE CHOICE ----------
+    if (payload.startsWith("MOTOR_CHOOSE_")) {
+      const size = payload.replace("MOTOR_CHOOSE_", "").replace(/_/g, "/").replace(/~/g, "-");
+      session.banUkuran = size;
+      session.state = "show_products";
+      await this.showBanProducts(senderId, session);
       return;
     }
 
-    // =========================
-    // ✅ LAMPU: TYPE FLOW
-    // =========================
-
-    // paginate type list
-    if (payload.startsWith("TYPE_LAMPU_PAGE_")) {
-      const page = parseInt(payload.replace("TYPE_LAMPU_PAGE_", ""), 10) || 1;
-      await this.sendTypeLampuMenu(senderId, page, session);
-      return;
-    }
-
-    // select type
-    if (payload.startsWith("TYPE_LAMPU_")) {
-      const encoded = payload.replace("TYPE_LAMPU_", "");
-      const typeLampu = this.decodeTextPayload(encoded);
-
-      session.lampuType = typeLampu;
-      session.state = "lampu_show_type";
-      await this.sendLampuByType(senderId, session, typeLampu, 1);
-      return;
-    }
-
-    // paginate products by type
-    if (payload.startsWith("LAMPU_TYPE_PAGE_")) {
-      // Format: LAMPU_TYPE_PAGE_<b64Type>_<page>
-      const rest = payload.replace("LAMPU_TYPE_PAGE_", "");
-      const parts = rest.split("_");
-      const page = parseInt(parts[parts.length - 1], 10) || 1;
-      const b64Type = parts.slice(0, -1).join("_");
-      const typeLampu = this.decodeTextPayload(b64Type);
-
-      session.lampuType = typeLampu;
-      session.state = "lampu_show_type";
-      await this.sendLampuByType(senderId, session, typeLampu, page);
-      return;
-    }
-
-    // back to type list
-    if (payload === "LAMPU_PILIH_TYPE") {
-      await this.sendTypeLampuMenu(senderId, 1, session);
-      return;
-    }
-
-    // =========================
-    // ✅ OLI: PACK FLOW
-    // =========================
-
-    // paginate pack list
-    if (payload.startsWith("PACK_OLI_PAGE_")) {
-      const page = parseInt(payload.replace("PACK_OLI_PAGE_", ""), 10) || 1;
-      await this.sendPackOliMenu(senderId, page, session);
-      return;
-    }
-
-    // select pack
-    if (payload.startsWith("PACK_OLI_")) {
-      const encoded = payload.replace("PACK_OLI_", "");
-      const pack = this.decodeTextPayload(encoded);
-
-      session.oliPack = pack;
-      session.state = "oli_show_pack";
-      await this.sendOliByPack(senderId, session, pack, 1);
-      return;
-    }
-
-    // paginate products by pack
-    if (payload.startsWith("OLI_PACK_PAGE_")) {
-      // Format: OLI_PACK_PAGE_<b64Pack>_<page>
-      const rest = payload.replace("OLI_PACK_PAGE_", "");
-      const parts = rest.split("_");
-      const page = parseInt(parts[parts.length - 1], 10) || 1;
-      const b64Pack = parts.slice(0, -1).join("_");
-      const pack = this.decodeTextPayload(b64Pack);
-
-      session.oliPack = pack;
-      session.state = "oli_show_pack";
-      await this.sendOliByPack(senderId, session, pack, page);
-      return;
-    }
-
-    // back to pack list
-    if (payload === "OLI_PILIH_PACK") {
-      await this.sendPackOliMenu(senderId, 1, session);
-      return;
-    }
-
-    // ---------- CATEGORY ----------
-    if (payload.startsWith("CATEGORY_")) {
-      const category = payload.replace("CATEGORY_", "").toLowerCase();
-      session.currentCategory = category;
-
-      // ✅ CAT SPECIAL: ask color first (NO brand menu)
-      if (category === "cat") {
-        session.state = "cat_ask_color";
-        await this.sendTextMessage(
-          senderId,
-          "🎨 Mau warna apa, juragan? (contoh: biru / blue / navy / silver / abu)"
-        );
-        return;
-      }
-
-      // ✅ BAN SPECIAL
-      if (category === "ban") {
-        await this.sendUkuranBanMenu(senderId, 1, session);
-        return;
-      }
-
-      // ✅ OLI SPECIAL: ask PACK first (NO brand menu)
-      if (category === "oli") {
-        await this.sendPackOliMenu(senderId, 1, session);
-        return;
-      }
-
-      // ✅ LAMPU SPECIAL: ask TYPE first (NO brand menu)
-      if (category === "lampu") {
-        await this.sendTypeLampuMenu(senderId, 1, session);
-        return;
-      }
-
-      await this.sendBrandMenu(senderId, category, session);
-      return;
-    }
-
-    // ---------- NAV ----------
-    if (payload === "MAIN_MENU" || payload === "BACK_TO_CATEGORIES") {
-      await this.sendCategoryMenu(senderId);
-      return;
-    }
-
-    if (payload === "HELP") {
-      await this.sendHelpMessage(senderId);
-      return;
-    }
-
-    if (payload === "SEARCH_AGAIN") {
-      await this.sendTextMessage(
-        senderId,
-        '🔍 Ketik nama produk yang ingin kamu cari:\n\n💡 **Contoh:**\n• "ban corsa"\n• "oli castrol"\n• "lampu LED"\n• "cat biru"'
-      );
-      return;
-    }
-
-    // ---------- non-ban brand pagination etc ----------
-    if (payload.startsWith("BRAND_PAGE_")) {
-      const parts = payload.replace("BRAND_PAGE_", "").split("_");
-      const category = parts[0].toLowerCase();
-      const page = parseInt(parts[1], 10) || 1;
-      session.currentCategory = category;
-      await this.sendBrandMenu(senderId, category, session, page);
-      return;
-    }
-
-    if (payload.startsWith("BRAND_")) {
-      const parts = payload.replace("BRAND_", "").split("_");
-      const category = parts[0].toLowerCase();
-      const brand = parts.slice(1).join("_").replace(/_/g, " ");
-      session.currentCategory = category;
-      session.currentBrand = brand;
-      await this.sendBrandProducts(senderId, category, brand, 1);
-      return;
-    }
-
-    if (payload.startsWith("PRODUCT_PAGE_")) {
-      const parts = payload.replace("PRODUCT_PAGE_", "").split("_");
-      if (parts.length >= 3) {
-        const category = parts[0].toLowerCase();
-        const pageNum = parseInt(parts[parts.length - 1], 10) || 1;
-        const brand = parts.slice(1, -1).join("_").replace(/_/g, " ");
-        session.currentCategory = category;
-        session.currentBrand = brand;
-        await this.sendBrandProducts(senderId, category, brand, pageNum);
+    // ---------- PAGINATION ----------
+    if (payload === "NEXT_PAGE") {
+      if (session.currentPage < session.totalPages) {
+        session.currentPage++;
+        await this.showBanProducts(senderId, session);
       }
       return;
     }
 
-    if (payload.startsWith("SEARCH_")) {
-      const searchTerm = payload.replace("SEARCH_", "");
-      await this.searchAndSendProducts(senderId, searchTerm);
+    if (payload === "PREV_PAGE") {
+      if (session.currentPage > 1) {
+        session.currentPage--;
+        await this.showBanProducts(senderId, session);
+      }
       return;
     }
 
-    console.log("⚠️ Unknown quick reply payload:", payload);
+    // ---------- AFTER PRODUCTS OPTIONS ----------
+    if (payload === "LIAT_LAGI") {
+      session.state = null;
+      session.banSize = null;
+      session.banRing = null;
+      session.banUkuran = null;
+      session.banBrandPattern = null;
+      session.banSearchQuery = null;
+      session.motorType = null;
+      session.motorPosition = null;
+      session.currentPage = 1;
+      session.totalPages = 1;
+      session.allProducts = [];
+      await this.sendWelcomeMessage(senderId);
+      return;
+    }
+
+    if (payload === "SELESAI") {
+      await this.sendFinishMessage(senderId);
+      this.userSessions.delete(senderId);
+      return;
+    }
+
+    // ---------- MOTOR FLOW: DEPAN LAGI ----------
+    if (payload === "MOTOR_DEPAN_LAGI") {
+      session.motorPosition = "depan";
+      session.state = "showing_motor_recommendations";
+      await this.showMotorRecommendations(senderId, session);
+      return;
+    }
+
+    // ---------- MOTOR FLOW: BELAKANG ----------
+    if (payload === "MOTOR_BELAKANG_NOW") {
+      session.motorPosition = "belakang";
+      session.state = "showing_motor_recommendations";
+      await this.showMotorRecommendations(senderId, session);
+      return;
+    }
+
+    // ---------- TIPE MOTOR ----------
+    if (payload === "INPUT_TIPE_MOTOR") {
+      session.state = "waiting_motor_type";
+      await this.sendTextMessage(senderId, "Boleh tau tipe motornya apa, juragan? Contoh: Yamaha Mio, Honda Beat");
+      return;
+    }
+
+    // Default: unknown payload
+    await this.sendWelcomeMessage(senderId);
   }
 
   // =========================
@@ -479,961 +918,46 @@ class MessageHandler {
 
     console.log(`🎯 Postback from ${senderId}: ${payload}`);
 
-    if (payload.startsWith("ORDER_")) {
-      const productId = payload.replace("ORDER_", "");
-      await this.addProductToSelection(senderId, productId, session);
-      return;
-    }
-
-    if (payload.startsWith("DETAIL_")) {
-      await this.sendProductDetail(senderId, payload);
-      return;
-    }
-
     if (payload === "GET_STARTED") {
       await this.sendWelcomeMessage(senderId);
-      await this.sendCategoryMenu(senderId);
       return;
     }
 
-    if (payload.startsWith("CATEGORY_")) {
-      const category = payload.replace("CATEGORY_", "").toLowerCase();
-      session.currentCategory = category;
-
-      // ✅ CAT SPECIAL: ask color first
-      if (category === "cat") {
-        session.state = "cat_ask_color";
-        await this.sendTextMessage(
-          senderId,
-          "🎨 Mau warna apa, juragan? (contoh: biru / blue / navy / silver / abu)"
-        );
-        return;
-      }
-
-      // ✅ BAN SPECIAL
-      if (category === "ban") {
-        await this.sendUkuranBanMenu(senderId, 1, session);
-        return;
-      }
-
-      // ✅ OLI SPECIAL
-      if (category === "oli") {
-        await this.sendPackOliMenu(senderId, 1, session);
-        return;
-      }
-
-      // ✅ LAMPU SPECIAL
-      if (category === "lampu") {
-        await this.sendTypeLampuMenu(senderId, 1, session);
-        return;
-      }
-
-      await this.sendBrandMenu(senderId, category, session);
-      return;
-    }
-  }
-
-  // =========================
-  // BAN: UKURAN MENU (PAGINATED)
-  // =========================
-  async sendUkuranBanMenu(senderId, page = 1, session) {
-    const ukuranList = (await sheetsService.getUkuranBanList()) || [];
-    const perPage = 10;
-    const totalPages = Math.max(1, Math.ceil(ukuranList.length / perPage));
-    const safePage = Math.min(Math.max(page, 1), totalPages);
-
-    const start = (safePage - 1) * perPage;
-    const show = ukuranList.slice(start, start + perPage);
-
-    const quickReplies = [];
-
-    if (safePage > 1) {
-      quickReplies.push({
-        content_type: "text",
-        title: "⬅️ Prev",
-        payload: `UKURAN_BAN_PAGE_${safePage - 1}`,
-      });
-    }
-
-    show.forEach((u) => {
-      quickReplies.push({
-        content_type: "text",
-        title: String(u),
-        payload: `UKURAN_BAN_${this.encodeUkuran(u)}`,
-      });
-    });
-
-    // Place 'Tidak Yakin' as the first quick reply so user can choose it immediately
-    const tidakYakinQR = {
-      content_type: "text",
-      title: "Tidak Yakin",
-      payload: "UKURAN_BAN_TIDAK_YAKIN",
-    };
-
-    // Add Next if needed
-    if (safePage < totalPages) {
-      quickReplies.push({
-        content_type: "text",
-        title: "Next ➡️",
-        payload: `UKURAN_BAN_PAGE_${safePage + 1}`,
-      });
-    }
-
-    // Ensure 'Tidak Yakin' is first
-    quickReplies.unshift(tidakYakinQR);
-
-    // Always add Main Menu at the end
-    quickReplies.push({
-      content_type: "text",
-      title: "🏠 Menu Utama",
-      payload: "MAIN_MENU",
-    });
-
-    await this.sendTextMessage(
-      senderId,
-      `Pilih ukuran ban yang dicari:` +
-        (totalPages > 1 ? `\nHalaman ${safePage} dari ${totalPages}` : ""),
-      quickReplies.slice(0, 13)
-    );
-
-    session.state = "ban_choose_ukuran";
-  }
-
-  // =========================
-  // ✅ LAMPU: TYPE LAMPU MENU (PAGINATED)
-  // =========================
-  async sendTypeLampuMenu(senderId, page = 1, session) {
-    const typeList = (await sheetsService.getTypeLampuList()) || [];
-    const perPage = 10;
-    const totalPages = Math.max(1, Math.ceil(typeList.length / perPage));
-    const safePage = Math.min(Math.max(page, 1), totalPages);
-
-    const start = (safePage - 1) * perPage;
-    const show = typeList.slice(start, start + perPage);
-
-    const quickReplies = [];
-
-    if (safePage > 1) {
-      quickReplies.push({
-        content_type: "text",
-        title: "⬅️ Prev",
-        payload: `TYPE_LAMPU_PAGE_${safePage - 1}`,
-      });
-    }
-
-    show.forEach((t) => {
-      quickReplies.push({
-        content_type: "text",
-        title: String(t).slice(0, 20),
-        payload: `TYPE_LAMPU_${this.encodeTextPayload(t)}`,
-      });
-    });
-
-    if (safePage < totalPages) {
-      quickReplies.push({
-        content_type: "text",
-        title: "Next ➡️",
-        payload: `TYPE_LAMPU_PAGE_${safePage + 1}`,
-      });
-    }
-
-    quickReplies.push({
-      content_type: "text",
-      title: "🏠 Menu Utama",
-      payload: "MAIN_MENU",
-    });
-
-    await this.sendTextMessage(
-      senderId,
-      `💡 Pilih TYPE LAMPU yang dicari:` +
-        (totalPages > 1 ? `\nHalaman ${safePage} dari ${totalPages}` : ""),
-      quickReplies.slice(0, 13)
-    );
-
-    session.state = "lampu_choose_type";
-  }
-
-  // =========================
-  // ✅ OLI: PACK MENU (PAGINATED)
-  // =========================
-  async sendPackOliMenu(senderId, page = 1, session) {
-    const packList = (await sheetsService.getPackOliList()) || [];
-    const perPage = 10;
-    const totalPages = Math.max(1, Math.ceil(packList.length / perPage));
-    const safePage = Math.min(Math.max(page, 1), totalPages);
-
-    const start = (safePage - 1) * perPage;
-    const show = packList.slice(start, start + perPage);
-
-    const quickReplies = [];
-
-    if (safePage > 1) {
-      quickReplies.push({
-        content_type: "text",
-        title: "⬅️ Prev",
-        payload: `PACK_OLI_PAGE_${safePage - 1}`,
-      });
-    }
-
-    show.forEach((p) => {
-      const label = String(p).length ? `${p}L` : String(p);
-      quickReplies.push({
-        content_type: "text",
-        title: label.slice(0, 20),
-        payload: `PACK_OLI_${this.encodeTextPayload(p)}`,
-      });
-    });
-
-    if (safePage < totalPages) {
-      quickReplies.push({
-        content_type: "text",
-        title: "Next ➡️",
-        payload: `PACK_OLI_PAGE_${safePage + 1}`,
-      });
-    }
-
-    quickReplies.push({
-      content_type: "text",
-      title: "🏠 Menu Utama",
-      payload: "MAIN_MENU",
-    });
-
-    await this.sendTextMessage(
-      senderId,
-      `🛢️ Pilih **PACK** oli yang dicari:` +
-        (totalPages > 1 ? `\nHalaman ${safePage} dari ${totalPages}` : ""),
-      quickReplies.slice(0, 13)
-    );
-
-    session.state = "oli_choose_pack";
-  }
-
-  // =========================
-  // ✅ LAMPU: SHOW PRODUCTS BY TYPE (PAGINATED)
-  // =========================
-  async sendLampuByType(senderId, session, typeLampu, page = 1) {
-    try {
-      await this.sendTypingOn(senderId);
-
-      const products =
-        (await sheetsService.getLampuByTypeLampu(typeLampu)) || [];
-      if (!products.length) {
-        await this.sendTextMessage(
-          senderId,
-          `Maaf, belum ada lampu untuk TYPE LAMPU **${typeLampu}** 😅\n\nPilih type lain ya.`,
-          [
-            {
-              content_type: "text",
-              title: "📂 Type Lain",
-              payload: "LAMPU_PILIH_TYPE",
-            },
-            {
-              content_type: "text",
-              title: "🏠 Menu Utama",
-              payload: "MAIN_MENU",
-            },
-          ]
-        );
-        return;
-      }
-
-      const maxPerPage = 10;
-      const totalPages = Math.max(1, Math.ceil(products.length / maxPerPage));
-      const safePage = Math.min(Math.max(page, 1), totalPages);
-
-      const startIndex = (safePage - 1) * maxPerPage;
-      const show = products.slice(startIndex, startIndex + maxPerPage);
-
-      const elements = show.map((p, i) => {
-        const globalIndex = startIndex + i;
-        const productId = `LAMPU_TYPE_${this.encodeTextPayload(
-          typeLampu
-        )}_${globalIndex}`;
-
-        return {
-          title: String(p.name || "").slice(0, 80),
-          subtitle: this.formatProductSubtitle(p),
-          image_url:
-            this.normalizeImageUrl(p.image_url) ||
-            this.getDefaultProductImage("lampu"),
-          buttons: [
-            {
-              type: "postback",
-              title: "🛒 Tertarik",
-              payload: `ORDER_${productId}`,
-            },
-          ],
-        };
-      });
-
-      await this.sendCarousel(senderId, elements);
-
-      const b64Type = this.encodeTextPayload(typeLampu);
-      const quickReplies = [];
-
-      if (totalPages > 1 && safePage > 1) {
-        quickReplies.push({
-          content_type: "text",
-          title: "⬅️ Prev",
-          payload: `LAMPU_TYPE_PAGE_${b64Type}_${safePage - 1}`,
-        });
-      }
-      if (totalPages > 1 && safePage < totalPages) {
-        quickReplies.push({
-          content_type: "text",
-          title: "Next ➡️",
-          payload: `LAMPU_TYPE_PAGE_${b64Type}_${safePage + 1}`,
-        });
-      }
-
-      quickReplies.push(
-        {
-          content_type: "text",
-          title: "📂 Type Lain",
-          payload: "LAMPU_PILIH_TYPE",
-        },
-        { content_type: "text", title: "🏠 Menu Utama", payload: "MAIN_MENU" }
-      );
-
-      await this.sendTextMessage(
-        senderId,
-        `💡 **Lampu TYPE ${typeLampu}**\n` +
-          `📦 Menampilkan ${show.length} dari ${products.length}` +
-          (totalPages > 1
-            ? `\n📄 Halaman ${safePage} dari ${totalPages}`
-            : "") +
-          `\n\nKlik "Tertarik" untuk simpan pilihan. Ketik "selesai" untuk ringkasan.`,
-        quickReplies.slice(0, 13)
-      );
-
-      session.state = "lampu_show_type";
-      session.lampuType = typeLampu;
-    } catch (e) {
-      console.error("❌ sendLampuByType error:", e?.message || e);
-      await this.sendTextMessage(
-        senderId,
-        "Maaf, error saat ambil lampu berdasarkan TYPE 😅"
-      );
-    }
-  }
-
-  // =========================
-  // ✅ OLI: SHOW PRODUCTS BY PACK (PAGINATED)
-  // =========================
-  async sendOliByPack(senderId, session, pack, page = 1) {
-    try {
-      await this.sendTypingOn(senderId);
-
-      const products = (await sheetsService.getProductsByPackOli(pack)) || [];
-      if (!products.length) {
-        await this.sendTextMessage(
-          senderId,
-          `Maaf, belum ada oli untuk PACK **${pack}** 😅\n\nPilih pack lain ya.`,
-          [
-            {
-              content_type: "text",
-              title: "📂 Pack Lain",
-              payload: "OLI_PILIH_PACK",
-            },
-            {
-              content_type: "text",
-              title: "🏠 Menu Utama",
-              payload: "MAIN_MENU",
-            },
-          ]
-        );
-        return;
-      }
-
-      const maxPerPage = 10;
-      const totalPages = Math.max(1, Math.ceil(products.length / maxPerPage));
-      const safePage = Math.min(Math.max(page, 1), totalPages);
-
-      const startIndex = (safePage - 1) * maxPerPage;
-      const show = products.slice(startIndex, startIndex + maxPerPage);
-
-      const elements = show.map((p, i) => {
-        const globalIndex = startIndex + i;
-        const productId = `OLI_PACK_${this.encodeTextPayload(
-          pack
-        )}_${globalIndex}`;
-
-        return {
-          title: String(p.name || "").slice(0, 80),
-          subtitle: this.formatProductSubtitle(p),
-          image_url:
-            this.normalizeImageUrl(p.image_url) ||
-            this.getDefaultProductImage("oli"),
-          buttons: [
-            {
-              type: "postback",
-              title: "🛒 Tertarik",
-              payload: `ORDER_${productId}`,
-            },
-          ],
-        };
-      });
-
-      await this.sendCarousel(senderId, elements);
-
-      const b64Pack = this.encodeTextPayload(pack);
-      const quickReplies = [];
-
-      if (totalPages > 1 && safePage > 1) {
-        quickReplies.push({
-          content_type: "text",
-          title: "⬅️ Prev",
-          payload: `OLI_PACK_PAGE_${b64Pack}_${safePage - 1}`,
-        });
-      }
-      if (totalPages > 1 && safePage < totalPages) {
-        quickReplies.push({
-          content_type: "text",
-          title: "Next ➡️",
-          payload: `OLI_PACK_PAGE_${b64Pack}_${safePage + 1}`,
-        });
-      }
-
-      quickReplies.push(
-        {
-          content_type: "text",
-          title: "📂 Pack Lain",
-          payload: "OLI_PILIH_PACK",
-        },
-        { content_type: "text", title: "🏠 Menu Utama", payload: "MAIN_MENU" }
-      );
-
-      await this.sendTextMessage(
-        senderId,
-        `🛢️ **Oli PACK ${pack}**\n` +
-          `📦 Menampilkan ${show.length} dari ${products.length}` +
-          (totalPages > 1
-            ? `\n📄 Halaman ${safePage} dari ${totalPages}`
-            : "") +
-          `\n\nKlik "Tertarik" untuk simpan pilihan. Ketik "selesai" untuk ringkasan.`,
-        quickReplies.slice(0, 13)
-      );
-
-      session.state = "oli_show_pack";
-      session.oliPack = pack;
-    } catch (e) {
-      console.error("❌ sendOliByPack error:", e?.message || e);
-      await this.sendTextMessage(
-        senderId,
-        "Maaf, error saat ambil oli berdasarkan PACK 😅"
-      );
-    }
-  }
-
-  // =========================
-  // BAN: SHOW ALL PRODUCTS BY UKURAN (NO BRAND)
-  // =========================
-  async sendBanByUkuran(senderId, session, ukuran, page = 1) {
-    try {
-      await this.sendTypingOn(senderId);
-
-      let products = await sheetsService.getProductsByUkuranBan(ukuran);
-      products = (products || []).sort((a, b) => {
-        const isMaxxisA = (a.brand || "").toLowerCase().includes("maxxis")
-          ? -1
-          : 1;
-        const isMaxxisB = (b.brand || "").toLowerCase().includes("maxxis")
-          ? -1
-          : 1;
-        return isMaxxisA - isMaxxisB;
-      });
-
-      if (!products || products.length === 0) {
-        await this.sendTextMessage(
-          senderId,
-          `Maaf, belum ada ban ukuran **${ukuran}** 😅\n\nPilih ukuran lain ya.`,
-          [
-            {
-              content_type: "text",
-              title: "📂 Ukuran Lain",
-              payload: "BAN_PILIH_UKURAN",
-            },
-            {
-              content_type: "text",
-              title: "🏠 Menu Utama",
-              payload: "MAIN_MENU",
-            },
-          ]
-        );
-        return;
-      }
-
-      const maxPerPage = 10;
-      const totalPages = Math.max(1, Math.ceil(products.length / maxPerPage));
-      const safePage = Math.min(Math.max(page, 1), totalPages);
-
-      const startIndex = (safePage - 1) * maxPerPage;
-      const show = products.slice(startIndex, startIndex + maxPerPage);
-
-      const elements = show.map((p, i) => {
-        const globalIndex = startIndex + i;
-        const productId = `BAN_SIZE_${this.encodeUkuran(
-          ukuran
-        )}_${globalIndex}`;
-        return {
-          title: p.name,
-          subtitle: this.formatProductSubtitle(p),
-          image_url:
-            this.normalizeImageUrl(p.image_url) ||
-            this.getDefaultProductImage("ban"),
-          buttons: [
-            {
-              type: "postback",
-              title: "📋 Detail",
-              payload: `DETAIL_${productId}`,
-            },
-            {
-              type: "postback",
-              title: "🛒 TERTARIK",
-              payload: `ORDER_${productId}`,
-            },
-          ],
-        };
-      });
-
-      await this.sendCarousel(senderId, elements);
-
-      const quickReplies = [];
-      if (totalPages > 1) {
-        if (safePage > 1) {
-          quickReplies.push({
-            content_type: "text",
-            title: "⬅️ Prev",
-            payload: `BAN_UKURAN_PAGE_${this.encodeUkuran(ukuran)}_${
-              safePage - 1
-            }`,
-          });
+    // Handle CEK_HARGA
+    if (payload.startsWith("CEK_HARGA_")) {
+      try {
+        const base64Data = payload.replace("CEK_HARGA_", "");
+        const productData = JSON.parse(Buffer.from(base64Data, 'base64').toString('utf8'));
+        
+        let priceText = `💰 **${productData.name}**\n`;
+        if (productData.brand) priceText += `🏷️ Merk: ${productData.brand}\n`;
+        if (productData.spec) priceText += `📋 Spesifikasi: ${productData.spec}\n`;
+        
+        if (productData.harga_pasang) {
+          const hargaPasangDisplay = productData.harga_pasang * 1000;
+          priceText += `\n🔧 **Harga Pasang: Rp ${hargaPasangDisplay.toLocaleString('id-ID')}**\n`;
+          priceText += `\n🛒 Untuk pembelian, klik link:\n📞 ${this.getWhatsAppLink()}\n`;
+        } else {
+          priceText += `\n💬 Untuk info harga terbaru, klik link:\n📞 ${this.getWhatsAppLink()}\n`;
         }
-        if (safePage < totalPages) {
-          quickReplies.push({
-            content_type: "text",
-            title: "Next ➡️",
-            payload: `BAN_UKURAN_PAGE_${this.encodeUkuran(ukuran)}_${
-              safePage + 1
-            }`,
-          });
-        }
-      }
-
-      quickReplies.push(
-        {
-          content_type: "text",
-          title: "📂 Ukuran Lain",
-          payload: "BAN_PILIH_UKURAN",
-        },
-        { content_type: "text", title: "🏠 Menu Utama", payload: "MAIN_MENU" }
-      );
-
-      await this.callSendAPI({
-        recipient: { id: senderId },
-        message: {
-          text:
-            `🛞 **Ban ukuran ${ukuran}**\n` +
-            `📦 Menampilkan ${show.length} dari ${products.length} produk` +
-            (totalPages > 1
-              ? `\n📄 Halaman ${safePage} dari ${totalPages}`
-              : "") +
-            `\n\nKlik "Tertarik" untuk tambah ke pilihan. Ketik "selesai" untuk ringkasan.`,
-          quick_replies: quickReplies.slice(0, 13),
-        },
-      });
-
-      session.state = "ban_show_ukuran";
-      session.banUkuran = ukuran;
-    } catch (e) {
-      console.error("❌ sendBanByUkuran error:", e?.message || e);
-      await this.sendTextMessage(
-        senderId,
-        "Maaf, error saat ambil ban berdasarkan ukuran 😅"
-      );
-    }
-  }
-
-  // =========================
-  // ✅ CAT: MATCH BY COLOR (GPT) + PAGINATION
-  // =========================
-  async sendCatByColor(senderId, session, userColor, page = 1) {
-    try {
-      await this.sendTypingOn(senderId);
-
-      const pageSize = 10;
-
-      const catProducts = await this.getAllCatProductsNormalized();
-      if (!catProducts.length) {
-        await this.sendTextMessage(
-          senderId,
-          "Maaf, produk cat belum tersedia 😅",
-          [
-            {
-              content_type: "text",
-              title: "🏠 Menu Utama",
-              payload: "MAIN_MENU",
-            },
-          ]
-        );
-        session.state = "cat_ask_color";
-        return;
-      }
-
-      let matchIds = [];
-      let keywords = [];
-
-      const cacheOk =
-        session.catLastResults &&
-        session.catLastResults.colorQuery === userColor &&
-        Array.isArray(session.catLastResults.matchIds);
-
-      if (!cacheOk) {
-        const res = await gptService.matchCatProductsByColor(
-          userColor,
-          catProducts,
-          1000
-        );
-        matchIds = (res.matches || []).map((m) => String(m.id));
-        keywords = res.keywords || [];
-        session.catLastResults = { matchIds, keywords, colorQuery: userColor };
-        session.catColorQuery = userColor;
-      } else {
-        matchIds = session.catLastResults.matchIds || [];
-        keywords = session.catLastResults.keywords || [];
-      }
-
-      const matched = matchIds
-        .map((id) => catProducts.find((p) => String(p.id) === id))
-        .filter(Boolean);
-
-      if (!matched.length) {
-        await this.sendTextMessage(
-          senderId,
-          `Waduh, aku belum nemu cat yang cocok buat warna "${userColor}" 😅\nCoba sebutin versi lain ya (contoh: "navy", "sky blue", "silver metallic").`,
-          [
-            {
-              content_type: "text",
-              title: "🏠 Menu Utama",
-              payload: "MAIN_MENU",
-            },
-          ]
-        );
-        session.state = "cat_ask_color";
-        return;
-      }
-
-      const totalPages = Math.max(1, Math.ceil(matched.length / pageSize));
-      const safePage = Math.min(Math.max(page, 1), totalPages);
-
-      const startIdx = (safePage - 1) * pageSize;
-      const show = matched.slice(startIdx, startIdx + pageSize);
-
-      const elements = show.map((p) => {
-        const productId = `CAT_${String(p.id)}`;
-        return {
-          title: String(p.name || "").slice(0, 80),
-          subtitle: String(p.brand || "-").slice(0, 80),
-          image_url:
-            this.normalizeImageUrl(p.image_url) ||
-            this.getDefaultProductImage("cat"),
-          buttons: [
-            {
-              type: "postback",
-              title: "🛒 TERTARIK",
-              payload: `ORDER_${productId}`,
-            },
-          ],
-        };
-      });
-
-      await this.sendCarousel(senderId, elements);
-
-      const b64Color = this.encodeTextPayload(userColor);
-      const quickReplies = [];
-
-      if (safePage > 1) {
-        quickReplies.push({
-          content_type: "text",
-          title: "⬅️ Prev",
-          payload: `CAT_COLOR_PAGE_${b64Color}_${safePage - 1}`,
-        });
-      }
-      if (safePage < totalPages) {
-        quickReplies.push({
-          content_type: "text",
-          title: "Next ➡️",
-          payload: `CAT_COLOR_PAGE_${b64Color}_${safePage + 1}`,
-        });
-      }
-
-      quickReplies.push(
-        {
-          content_type: "text",
-          title: "🎨 Ganti Warna",
-          payload: "CATEGORY_CAT",
-        },
-        { content_type: "text", title: "🏠 Menu Utama", payload: "MAIN_MENU" }
-      );
-
-      const kw = (keywords || []).slice(0, 8);
-      const kwLine = kw.length
-        ? `\n🔎 Aku cari yang mirip: ${kw.join(", ")}`
-        : "";
-
-      await this.sendTextMessage(
-        senderId,
-        `🎨 Hasil cat untuk warna **${userColor}** (${safePage}/${totalPages})${kwLine}\n\nKlik "Tertarik" untuk simpan pilihan. Ketik "selesai" untuk ringkasan.`,
-        quickReplies.slice(0, 13)
-      );
-
-      session.state = "cat_show_color";
-    } catch (e) {
-      console.error(
-        "❌ sendCatByColor error:",
-        e?.message || e,
-        e?.stack || ""
-      );
-      await this.sendTextMessage(
-        senderId,
-        "Maaf, error saat cari cat berdasarkan warna 😅\nCoba ketik warna lagi ya."
-      );
-      session.state = "cat_ask_color";
-    }
-  }
-
-  // =========================
-  // ADD PRODUCT TO SELECTION
-  // =========================
-  async addProductToSelection(senderId, productId, session) {
-    let product = null;
-
-    // ✅ LAMPU_TYPE_<b64Type>_<index>
-    if (String(productId).startsWith("LAMPU_TYPE_")) {
-      const parts = String(productId).split("_");
-      const b64Type = parts[2];
-      const idx = parseInt(parts[3], 10);
-      const typeLampu = this.decodeTextPayload(b64Type);
-
-      const products = await sheetsService.getLampuByTypeLampu(typeLampu);
-      if (products && products[idx]) product = products[idx];
-
-      if (!product) {
-        await this.sendTextMessage(
-          senderId,
-          "❌ Produk lampu tidak ditemukan."
-        );
-        return;
-      }
-
-      if (!session.selectedProducts) session.selectedProducts = [];
-      session.selectedProducts.push(product);
-
-      await this.sendTextMessage(
-        senderId,
-        `✅ Produk ditambahkan: ${product.name} (${
-          product.brand || "-"
-        })\n\nMau tambah lagi? Pilih type lain atau ketik "selesai".`,
-        [
-          {
-            content_type: "text",
-            title: "📂 Type Lain",
-            payload: "LAMPU_PILIH_TYPE",
-          },
-          {
-            content_type: "text",
-            title: "🏠 Menu Utama",
-            payload: "MAIN_MENU",
-          },
-        ]
-      );
-      return;
-    }
-
-    // ✅ OLI_PACK_<b64Pack>_<index>
-    if (String(productId).startsWith("OLI_PACK_")) {
-      const parts = String(productId).split("_");
-      const b64Pack = parts[2];
-      const idx = parseInt(parts[3], 10);
-      const pack = this.decodeTextPayload(b64Pack);
-
-      const products = await sheetsService.getProductsByPackOli(pack);
-      if (products && products[idx]) product = products[idx];
-
-      if (!product) {
-        await this.sendTextMessage(senderId, "❌ Produk oli tidak ditemukan.");
-        return;
-      }
-
-      if (!session.selectedProducts) session.selectedProducts = [];
-      session.selectedProducts.push(product);
-
-      await this.sendTextMessage(
-        senderId,
-        `✅ Ditambahkan: ${product.name} (${
-          product.brand || "-"
-        })\n\nMau tambah lagi? Pilih pack lain atau ketik "selesai".`,
-        [
-          {
-            content_type: "text",
-            title: "📂 Pack Lain",
-            payload: "OLI_PILIH_PACK",
-          },
-          {
-            content_type: "text",
-            title: "🏠 Menu Utama",
-            payload: "MAIN_MENU",
-          },
-        ]
-      );
-      return;
-    }
-
-    // ✅ CAT_<id>
-    if (String(productId).startsWith("CAT_")) {
-      const id = String(productId).replace("CAT_", "");
-      const catProducts = await this.getAllCatProductsNormalized();
-      product = catProducts.find((p) => String(p.id) === String(id));
-
-      if (!product) {
-        await this.sendTextMessage(senderId, "❌ Produk cat tidak ditemukan.");
-        return;
-      }
-
-      if (!session.selectedProducts) session.selectedProducts = [];
-      session.selectedProducts.push(product);
-
-      await this.sendTextMessage(
-        senderId,
-        `✅ Ditambahkan: ${product.name} (${
-          product.brand || "-"
-        })\n\nMau tambah lagi? Ketik warna lain, atau ketik "selesai".`
-      );
-
-      session.state = "cat_ask_color";
-      return;
-    }
-
-    // BAN_SIZE_<encodedUkuran>_<index>
-    if (String(productId).startsWith("BAN_SIZE_")) {
-      const parts = String(productId).split("_");
-      const encodedUkuran = parts[2];
-      const idx = parseInt(parts[3], 10);
-      const ukuran = this.decodeUkuran(encodedUkuran);
-
-      const products = await sheetsService.getProductsByUkuranBan(ukuran);
-      if (products && products[idx]) product = products[idx];
-
-      if (!product) {
-        await this.sendTextMessage(senderId, "❌ Produk tidak ditemukan.");
-        return;
-      }
-
-      if (!session.selectedProducts) session.selectedProducts = [];
-      session.selectedProducts.push(product);
-
-      await this.sendTextMessage(
-        senderId,
-        `✅ Produk ditambahkan: ${product.name} (${
-          product.brand || "-"
-        })\n\nMau tambah lagi? Pilih ukuran lain atau ketik "selesai".`,
-        [
-          {
-            content_type: "text",
-            title: "📂 Ukuran Lain",
-            payload: "BAN_PILIH_UKURAN",
-          },
-          {
-            content_type: "text",
-            title: "🏠 Menu Utama",
-            payload: "MAIN_MENU",
-          },
-        ]
-      );
-      return;
-    }
-
-    // fallback old pattern CATEGORY_BRAND_INDEX
-    const parts = String(productId).split("_");
-    if (parts.length >= 3) {
-      const category = parts[0].toLowerCase();
-      const brand = parts[1];
-      const index = parseInt(parts[2], 10);
-
-      const products = await sheetsService.getProductsByBrand(category, brand);
-      if (products && products[index]) product = products[index];
-
-      if (!product) {
-        const productResult = await sheetsService.getProductById(productId);
-        if (!productResult?.success) {
-          await this.sendTextMessage(senderId, "❌ Produk tidak ditemukan.");
-          return;
-        }
-        product = productResult.data;
-      }
-
-      if (!session.selectedProducts) session.selectedProducts = [];
-      session.selectedProducts.push(product);
-
-      await this.sendTextMessage(
-        senderId,
-        `✅ Produk ditambahkan: ${product.name} (${
-          product.brand || "-"
-        })\n\nKetik "katalog" untuk cari lagi, atau ketik "selesai" untuk ringkasan pilihanmu.`
-      );
-    }
-  }
-
-  // =========================
-  // PRODUCT DETAIL (BAN ONLY HERE)
-  // =========================
-  async sendProductDetail(senderId, productIdWithPrefix) {
-    try {
-      const cleaned = String(productIdWithPrefix).replace("DETAIL_", "");
-
-      if (cleaned.startsWith("BAN_SIZE_")) {
-        const parts = cleaned.split("_");
-        const encodedUkuran = parts[2];
-        const idx = parseInt(parts[3], 10);
-        const ukuran = this.decodeUkuran(encodedUkuran);
-
-        const products = await sheetsService.getProductsByUkuranBan(ukuran);
-        const p = products && products[idx];
-        if (!p) {
-          await this.sendTextMessage(
-            senderId,
-            "Maaf, produk tidak ditemukan 😅"
-          );
-          return;
-        }
-
-        const detailText = this.formatProductDetail(p);
-        await this.sendTextMessage(senderId, detailText, [
-          {
-            content_type: "text",
-            title: "📂 Ukuran Lain",
-            payload: "BAN_PILIH_UKURAN",
-          },
-          {
-            content_type: "text",
-            title: "🏠 Menu Utama",
-            payload: "MAIN_MENU",
-          },
+        
+        await this.sendTextMessage(senderId, priceText, [
+          { content_type: "text", title: "🔍 Liat-liat Lagi", payload: "LIAT_LAGI" },
+          { content_type: "text", title: "✅ Selesai", payload: "SELESAI" },
         ]);
-        return;
+        
+        session.state = "after_price_check";
+      } catch (error) {
+        console.error("Error handling CEK_HARGA:", error);
+        // Reset session on error
+        session.state = null;
+        await this.sendTextMessage(senderId, `Maaf, ada error saat mengecek harga 😔\n\nUntuk info harga, klik link:\n📞 ${this.getWhatsAppLink()}`);
       }
-
-      await this.sendTextMessage(
-        senderId,
-        "Detail produk belum tersedia untuk format ini."
-      );
-    } catch (e) {
-      console.error("❌ sendProductDetail error:", e?.message || e);
-      await this.sendTextMessage(
-        senderId,
-        "Maaf, ada error saat mengambil detail 😅"
-      );
+      return;
     }
+
+    // Handle via quick reply handler
+    await this.handleQuickReply(senderId, payload, session);
   }
 
   // =========================
@@ -1445,16 +969,15 @@ class MessageHandler {
 
     const fresh = () => ({
       state: null,
-      orderData: null,
       lastActivity: now,
-      selectedProducts: [],
-      banUkuran: null,
-      banMotorQuery: null,
-      banPosisi: null,
-      lampuType: null,
-      oliPack: null, // ✅ add this
-      catColorQuery: null,
-      catLastResults: null,
+      banSize: null,        // e.g., "80/90"
+      banRing: null,        // e.g., "14"
+      banUkuran: null,      // complete e.g., "80/90-14"
+      motorType: null,      // e.g., "Yamaha Mio"
+      motorPosition: null,  // "depan" or "belakang"
+      currentPage: 1,       // for pagination
+      totalPages: 1,        // total pages for pagination
+      allProducts: [],      // all matched products for pagination
     });
 
     if (!this.userSessions.has(senderId)) {
@@ -1476,145 +999,43 @@ class MessageHandler {
   // =========================
   // UTIL
   // =========================
-  encodeUkuran(u) {
-    return String(u).replace(/\//g, "-").replace(/\s+/g, "~");
+  looksLikeCompleteBanSize(s) {
+    // Matches: 80/90-14, 100/80-17, etc (with ring size)
+    return /^\d{2,3}\s*\/\s*\d{2,3}\s*-\s*\d{2}$/i.test(String(s).trim());
   }
 
-  decodeUkuran(u) {
-    return String(u).replace(/-/g, "/").replace(/~/g, " ");
+  looksLikeIncompleteBanSize(s) {
+    // Matches: 80/90, 100/80, or 80/90-14 (with or without ring)
+    return /^\d{2,3}\s*\/\s*\d{2,3}(\s*-\s*\d{2})?$/i.test(String(s).trim());
   }
 
-  looksLikeUkuranBan(s) {
-    return /(\d{2,3}\s*\/\s*\d{2,3})(-\d{2})?/i.test(String(s));
-  }
-
-  encodeTextPayload(s) {
-    return Buffer.from(String(s || ""), "utf8")
-      .toString("base64")
-      .replace(/\+/g, "-")
-      .replace(/\//g, "_")
-      .replace(/=+$/g, "");
-  }
-
-  decodeTextPayload(b64) {
-    let s = String(b64 || "")
-      .replace(/-/g, "+")
-      .replace(/_/g, "/");
-    while (s.length % 4) s += "=";
-    return Buffer.from(s, "base64").toString("utf8");
-  }
-
-  // =========================
-  // HELPERS
-  // =========================
-  formatProductSubtitle(product) {
-    let subtitle = "";
-    if (product.brand) subtitle += `${product.brand}`;
-    if (product.specifications) subtitle += ` • ${product.specifications}`;
-    return subtitle || "Informasi produk";
-  }
-
-  formatProductDetail(product) {
-    let detail = `📦 **${product.name}**\n\n`;
-    if (product.brand) detail += `🏷️ **Merk:** ${product.brand}\n`;
-    if (product.specifications)
-      detail += `📋 **Spesifikasi:** ${product.specifications}\n`;
-    if (product.category) detail += `📂 **Kategori:** ${product.category}\n`;
-    return detail;
-  }
-
-  getDefaultProductImage(categoryName) {
-    const defaultImages = {
-      ban: "https://picsum.photos/1200/628?random=1",
-      oli: "https://picsum.photos/1200/628?random=2",
-      lampu: "https://picsum.photos/1200/628?random=3",
-      cat: "https://picsum.photos/1080/1080?random=4",
-    };
-    return (
-      defaultImages[String(categoryName || "").toLowerCase()] ||
-      "https://picsum.photos/1200/628?random=5"
-    );
-  }
-
-  normalizeImageUrl(url) {
-    const u = String(url || "").trim();
-    if (!u) return "";
-
-    let directUrl = u;
-    const m1 = u.match(/drive\.google\.com\/file\/d\/([^/]+)/i);
-    if (m1)
-      directUrl = `https://drive.google.com/uc?export=download&id=${m1[1]}`;
-    const m2 = u.match(/drive\.google\.com\/open\?id=([^&]+)/i);
-    if (m2)
-      directUrl = `https://drive.google.com/uc?export=download&id=${m2[1]}`;
-    const m3 = u.match(/drive\.google\.com\/uc\?id=([^&]+)/i);
-    if (m3)
-      directUrl = `https://drive.google.com/uc?export=download&id=${m3[1]}`;
-    if (u.includes("dropbox.com")) {
-      directUrl = u
-        .replace("www.dropbox.com", "dl.dropboxusercontent.com")
-        .replace("?dl=0", "");
+  parseBanSize(s) {
+    // Returns [size, ring] e.g., ["80/90", "14"] or ["80/90", null]
+    const normalized = String(s).trim().replace(/\s+/g, "");
+    const match = normalized.match(/^(\d{2,3}\/\d{2,3})(-(\d{2}))?$/);
+    if (match) {
+      return [match[1], match[3] || null];
     }
-
-    const encoded = encodeURIComponent(directUrl);
-    const cloudName = process.env.CLOUDINARY_CLOUD_NAME || "demo";
-    return `https://res.cloudinary.com/${cloudName}/image/fetch/c_pad,b_white,w_800,h_418/${encoded}`;
+    return [null, null];
   }
 
-  // =========================
-  // ✅ CAT: get all cat products (robust)
-  // =========================
-  async getAllCatProductsNormalized() {
-    try {
-      if (typeof sheetsService.getProductsByCategory === "function") {
-        const rows = await sheetsService.getProductsByCategory("cat");
-        return this.normalizeCatRows(rows);
-      }
-
-      let brands = [];
-      if (typeof sheetsService.getBrandsByCategory === "function") {
-        brands = (await sheetsService.getBrandsByCategory("cat")) || [];
-      } else if (typeof sheetsService.getBrandsForCategory === "function") {
-        brands = (await sheetsService.getBrandsForCategory("cat")) || [];
-      }
-
-      const out = [];
-      for (const b of brands) {
-        const rows = await sheetsService.getProductsByBrand("cat", b);
-        out.push(...(rows || []));
-      }
-      return this.normalizeCatRows(out);
-    } catch (e) {
-      console.error("getAllCatProductsNormalized error:", e?.message || e);
-      return [];
-    }
+  normalizeBanSize(s) {
+    // Normalize to format: 80/90-14
+    return String(s).trim().replace(/\s+/g, "").replace(/[\/\-]/g, (m) => m === "/" ? "/" : "-");
   }
 
-  normalizeCatRows(rows) {
-    const arr = Array.isArray(rows) ? rows : [];
-    return arr
-      .map((r, idx) => {
-        const name = r?.name || r?.NAMA || r?.Nama || r?.nama || "";
-        const brand = r?.brand || r?.MERK || r?.Merk || r?.merk || "";
-        const id =
-          r?.id ||
-          r?.ID ||
-          r?.Id ||
-          (name
-            ? `${String(name).trim()}__${String(brand).trim()}__${idx}`
-            : `${idx}`);
+  extractRingSize(s) {
+    // Extract just ring number from input like "14", "ring 14", "17"
+    const match = String(s).match(/(\d{2})/);
+    return match ? match[1] : null;
+  }
 
-        return {
-          id: String(id),
-          name: String(name).trim(),
-          brand: String(brand).trim(),
-          image_url: r?.image_url || r?.IMAGE_URL || r?.img || null,
-          category: "cat",
-          specifications:
-            r?.specifications || r?.SPESIFIKASI || r?.spec || null,
-        };
-      })
-      .filter((p) => p.id && p.name);
+  encodeUkuranForPayload(u) {
+    return String(u).replace(/\//g, "_").replace(/-/g, "~");
+  }
+
+  decodeUkuranFromPayload(u) {
+    return String(u).replace(/_/g, "/").replace(/~/g, "-");
   }
 
   // =========================
@@ -1632,93 +1053,330 @@ class MessageHandler {
     return await facebookAPI.sendTypingOn(senderId);
   }
 
-  async callSendAPI(messageData) {
-    const recipientId = messageData.recipient.id;
-    const message = messageData.message;
-    return await facebookAPI.sendMessage(recipientId, message);
-  }
-
   // =========================
-  // PLACEHOLDERS (KEEP YOURS)
+  // WELCOME & FINISH MESSAGES
   // =========================
   async sendWelcomeMessage(senderId) {
-    const welcomeText = `Halo! 👋 Selamat datang di **Ban888 Auto Parts**!
-
-🛞 **Produk Kami:**
-• Ban mobil & motor
-• Lampu kendaraan  
-• Oli mesin
-• Cat kendaraan
-
-💬 **Cara Order:**
-• Ketik "katalog" untuk lihat semua kategori
-• Atau langsung cari produk (contoh: "ban corsa")
-• Klik tombol untuk order langsung!`;
+    const welcomeText = `Hallo juragan, dengan Bella Gudang Ban. Cari ban apa?`;
+    
     await this.sendTextMessage(senderId, welcomeText);
   }
 
-  async sendCategoryMenu(senderId) {
-    const categories = sheetsService.getAvailableCategories();
-    const quickReplies = categories.map((cat) => ({
-      content_type: "text",
-      title: cat.display_name,
-      payload: `CATEGORY_${cat.name.toUpperCase()}`,
-    }));
+  async sendFinishMessage(senderId) {
+    const finishText = `Terima kasih sudah menggunakan layanan Bella! 😊
 
-    quickReplies.push({
-      content_type: "text",
-      title: "❓ Bantuan",
-      payload: "HELP",
-    });
+Untuk order atau info lebih lanjut, klik link:
+📞 ${this.getWhatsAppLink()}
+📍 **Alamat:** https://maps.app.goo.gl/DCjy76XTXcPyKWdH9
 
-    await this.callSendAPI({
-      recipient: { id: senderId },
-      message: {
-        text: "📂 Pilih kategori produk yang dicari: (lihat bagian di atas kolom chat dan klik mana yang juragan tertarik)",
-        quick_replies: quickReplies.slice(0, 13),
-      },
-    });
+Sampai jumpa lagi, juragan! 👋`;
+    
+    await this.sendTextMessage(senderId, finishText);
   }
 
-  async sendBrandMenu(senderId, categoryName, session, page = 1) {
-    await this.sendTextMessage(
-      senderId,
-      `Menu merk untuk ${categoryName} belum dipasang di snippet ini.`
-    );
+  // =========================
+  // BAN FLOW METHODS
+  // =========================
+  async askForRingSize(senderId, session) {
+    const banSize = session.banSize;
+    
+    try {
+      // Get GPT recommendations for common ring sizes
+      const gptRecommendedRings = await gptService.getRecommendedRingSizes(banSize);
+      
+      // Also get available ring sizes from sheets for this ban size
+      const allBanProducts = await sheetsService.getProductsByCategory("ban");
+      const availableRings = new Set();
+      
+      allBanProducts.forEach(product => {
+        const spec = String(product.specifications || product.SPESIFIKASI || "");
+        if (spec.includes(banSize)) {
+          const match = spec.match(new RegExp(`${banSize.replace(/\//g, "\\/")}-(\\d{2})`));
+          if (match) {
+            availableRings.add(match[1]);
+          }
+        }
+      });
+
+      const availableRingsArray = Array.from(availableRings).sort();
+      
+      // Combine GPT recommendations with actual stock
+      // Prioritize rings that are both recommended AND in stock
+      const priorityRings = gptRecommendedRings.filter(r => availableRingsArray.includes(r));
+      const otherRings = availableRingsArray.filter(r => !priorityRings.includes(r));
+      
+      // Combine: priority first, then others (max 6 total for quick replies)
+      const displayRings = [...priorityRings, ...otherRings].slice(0, 6);
+      
+      if (displayRings.length === 0) {
+        // No ring sizes found - suggest using motor type instead
+        await this.sendTextMessage(
+          senderId, 
+          `Maaf, Bella tidak menemukan ring untuk ban ${banSize} 😔\n\nCoba kasih tau tipe motor aja yuk! Nanti Bella bantu carikan.\n\nContoh: Yamaha Mio, Honda Beat, Suzuki Nex`
+        );
+        
+        session.state = null;
+        session.banSize = null;
+        session.banRing = null;
+        session.banUkuran = null;
+        return;
+      }
+      
+      // Create simple message with GPT recommendations
+      const gptRingText = gptRecommendedRings.length > 0 
+        ? `\n\nBiasanya untuk ${banSize}: ring ${gptRecommendedRings.join(" atau ")}`
+        : "";
+      
+      const quickReplies = displayRings.map(ring => ({
+        content_type: "text",
+        title: `Ring ${ring}`,
+        payload: `RING_${ring}`
+      }));
+
+      const text = `Ring berapa juragan?${gptRingText}`;
+      await this.sendTextMessage(senderId, text, quickReplies);
+    } catch (error) {
+      console.error("Error in askForRingSize:", error);
+      await this.sendTextMessage(senderId, "Ring berapa juragan? Contoh: 14, 17");
+    }
   }
 
-  async sendBrandProducts(senderId, categoryName, brandName, page = 1) {
-    await this.sendTextMessage(
-      senderId,
-      `Produk merk ${brandName} belum dipasang di snippet ini.`
-    );
+  async showBanProducts(senderId, session) {
+    const ukuran = session.banUkuran;
+    const searchQuery = session.banSearchQuery || ukuran; // Support custom search queries
+    const brandPattern = session.banBrandPattern; // Brand/pattern filter if set
+    
+    try {
+      await this.sendTypingOn(senderId);
+      
+      // Reset to page 1 for new searches (not for pagination)
+      if (session.state !== "after_products") {
+        session.currentPage = 1;
+      }
+      
+      const allBanProducts = await sheetsService.getProductsByCategory("ban");
+      
+      // Use cached products if paginating, otherwise do fresh search
+      let matchedProducts;
+      if (session.state === "after_products" && session.allProducts.length > 0) {
+        // Paginating through existing results
+        matchedProducts = session.allProducts;
+      } else {
+        // New search - filter products
+        matchedProducts = allBanProducts.filter(product => {
+        const spec = String(product.specifications || product.SPESIFIKASI || "").toLowerCase();
+        const brand = String(product.brand || product.MERK || "").toLowerCase();
+        const pattern = String(product.pattern || product.PATTERN || "").toLowerCase();
+        const name = String(product.name || product.NAMA || "").toLowerCase();
+        
+        const searchLower = String(searchQuery).toLowerCase().replace(/\s+/g, "");
+        
+        // Check if searching by size (contains / or -)
+        const isSizeSearch = searchLower.includes('/') || searchLower.includes('-');
+        
+        // Match by size in spec (exact substring match)
+        const specMatch = spec.replace(/\s+/g, "").includes(searchLower);
+        
+        // Only do brand/pattern/name matching if NOT searching by size
+        let brandMatch = false;
+        let patternMatch = false;
+        let nameMatch = false;
+        
+        if (!isSizeSearch) {
+          // Searching by brand/pattern name
+          brandMatch = brand.includes(searchLower);
+          patternMatch = pattern.includes(searchLower);
+          nameMatch = name.includes(searchLower);
+        }
+        
+        const baseMatch = specMatch || brandMatch || patternMatch || nameMatch;
+        
+        // If brand/pattern filter is active, also check that
+        if (brandPattern) {
+          const brandPatternMatch = brand.includes(brandPattern) || pattern.includes(brandPattern) || name.includes(brandPattern);
+          return baseMatch && brandPatternMatch;
+        }
+        
+        return baseMatch;
+        });
+        
+        // Store results for pagination
+        session.allProducts = matchedProducts;
+      }
+
+      if (matchedProducts.length === 0) {
+        await this.sendTextMessage(senderId, `Maaf, Bella tidak menemukan ban ${searchQuery} 😔\n\nKetik ulang ukuran ban yang juragan cari atau ketik tipe motor.\n\nContoh: 80/90-14 atau Yamaha Mio`);
+        
+        // Reset state so user can type new input
+        session.state = null;
+        session.banSize = null;
+        session.banRing = null;
+        session.banUkuran = null;
+        session.banBrandPattern = null;
+        session.banSearchQuery = null;
+        return;
+      }
+
+      // Facebook Messenger carousel limit is 10 elements
+      const MAX_CAROUSEL_ITEMS = 10;
+      
+      // Calculate pagination
+      session.currentPage = session.currentPage || 1;
+      session.totalPages = Math.ceil(matchedProducts.length / MAX_CAROUSEL_ITEMS);
+      
+      // Get products for current page
+      const startIdx = (session.currentPage - 1) * MAX_CAROUSEL_ITEMS;
+      const endIdx = startIdx + MAX_CAROUSEL_ITEMS;
+      const productsToShow = matchedProducts.slice(startIdx, endIdx);
+      
+      let text = `📦 Halaman ${session.currentPage}/${session.totalPages}\n`;
+      text += `Menampilkan ${productsToShow.length} dari ${matchedProducts.length} ban yang tersedia:\n\n`;
+      
+      await this.sendTextMessage(senderId, text);
+
+      // Send up to 10 products in carousel
+      const elements = productsToShow.map((product, idx) => ({
+        title: product.name || product.NAMA,
+        subtitle: `${product.brand || product.MERK || ""}\n${product.specifications || product.SPESIFIKASI || ""}`,
+        image_url: product.image_url || product.IMAGE_URL || "https://via.placeholder.com/300x300.png?text=Ban",
+        buttons: [
+          {
+            type: "postback",
+            title: "💰 Cek Harga?",
+            payload: `CEK_HARGA_${Buffer.from(JSON.stringify({
+              name: product.name || product.NAMA,
+              harga_jual: product.harga_jual || product.HARGA_JUAL,
+              harga_pasang: product.harga_pasang || product.HARGA_PASANG,
+              brand: product.brand || product.MERK,
+              spec: product.specifications || product.SPESIFIKASI
+            })).toString('base64')}`
+          }
+        ]
+      }));
+
+      await this.sendCarousel(senderId, elements);
+
+      // Send purchase info
+      await this.sendTextMessage(
+        senderId,
+        `🛒 Untuk pembelian, klik link di bawah:\n📞 WhatsApp: ${this.getWhatsAppLink()}`
+      );
+
+      // Ask what's next
+      if (session.motorType) {
+        // User came from motor flow
+        const quickReplies = [];
+        
+        // Add pagination buttons if needed
+        if (session.currentPage > 1) {
+          quickReplies.push({ content_type: "text", title: "◀️ Sebelumnya", payload: "PREV_PAGE" });
+        }
+        if (session.currentPage < session.totalPages) {
+          quickReplies.push({ content_type: "text", title: "▶️ Selanjutnya", payload: "NEXT_PAGE" });
+        }
+        
+        if (session.motorPosition === "depan") {
+          quickReplies.push(
+            { content_type: "text", title: "🔄 Depan Lagi", payload: "MOTOR_DEPAN_LAGI" },
+            { content_type: "text", title: "🔽 Lihat Belakang", payload: "MOTOR_BELAKANG_NOW" }
+          );
+        } else {
+          quickReplies.push(
+            { content_type: "text", title: "🔼 Lihat Depan", payload: "MOTOR_DEPAN_LAGI" },
+            { content_type: "text", title: "🔄 Belakang Lagi", payload: "MOTOR_BELAKANG_NOW" }
+          );
+        }
+        quickReplies.push({ content_type: "text", title: "✅ Selesai", payload: "SELESAI" });
+
+        await this.sendTextMessage(senderId, "Mau lihat lagi atau sudah selesai?", quickReplies);
+      } else {
+        // Direct size input flow
+        const quickReplies = [];
+        
+        // Add pagination buttons if needed
+        if (session.currentPage > 1) {
+          quickReplies.push({ content_type: "text", title: "◀️ Sebelumnya", payload: "PREV_PAGE" });
+        }
+        if (session.currentPage < session.totalPages) {
+          quickReplies.push({ content_type: "text", title: "▶️ Selanjutnya", payload: "NEXT_PAGE" });
+        }
+        
+        quickReplies.push(
+          { content_type: "text", title: "🔍 Liat Lagi", payload: "LIAT_LAGI" },
+          { content_type: "text", title: "✅ Selesai", payload: "SELESAI" }
+        );
+
+        await this.sendTextMessage(senderId, "Mau lihat lagi atau sudah selesai?", quickReplies);
+      }
+
+      session.state = "after_products";
+    } catch (error) {
+      console.error("❌ Error in showBanProducts:");
+      console.error("Error name:", error?.name);
+      console.error("Error message:", error?.message);
+      console.error("Error stack:", error?.stack);
+      console.error("Session data:", {
+        ukuran: session.banUkuran,
+        searchQuery: session.banSearchQuery,
+        brandPattern: session.banBrandPattern
+      });
+      
+      // Reset session on error
+      session.state = null;
+      session.banSize = null;
+      session.banRing = null;
+      session.banUkuran = null;
+      session.banBrandPattern = null;
+      session.banSearchQuery = null;
+      await this.sendTextMessage(senderId, "Maaf, ada error saat menampilkan produk 😔\n\nKetik ulang ukuran ban atau tipe motor yang juragan cari.");
+    }
   }
 
-  async sendCategoryProducts(senderId, categoryName) {
-    await this.sendTextMessage(
-      senderId,
-      `Produk kategori ${categoryName} belum dipasang di snippet ini.`
-    );
-  }
+  async showMotorRecommendations(senderId, session) {
+    const motorType = session.motorType;
+    const position = session.motorPosition;
 
-  async searchAndSendProducts(senderId, searchTerm) {
-    await this.sendTextMessage(
-      senderId,
-      `Search "${searchTerm}" belum dipasang di snippet ini.`
-    );
-  }
+    try {
+      await this.sendTypingOn(senderId);
 
-  async sendHelpMessage(senderId) {
-    await this.sendTextMessage(
-      senderId,
-      "Ketik 'ban' untuk pilih ukuran ban, atau 'katalog' untuk menu. Ketik 'lampu' untuk pilih TYPE LAMPU. Ketik 'oli' untuk pilih PACK."
-    );
+      // Use GPT to get standard + upsize recommendations
+      const result = await gptService.getBanRecommendationsForMotor(motorType, position);
+
+      // Show both recommendations
+      const text = `🏍️ Rekomendasi ban ${position} untuk ${motorType}:\n\n${result.standard.label}: ${result.standard.size}\n${result.upsize.label}: ${result.upsize.size}\n\nPilih ukuran yang juragan mau:`;
+
+      const quickReplies = [
+        {
+          content_type: "text",
+          title: `📏 ${result.standard.size}`,
+          payload: `MOTOR_CHOOSE_${this.encodeUkuranForPayload(result.standard.size)}`
+        },
+        {
+          content_type: "text",
+          title: `⬆️ ${result.upsize.size}`,
+          payload: `MOTOR_CHOOSE_${this.encodeUkuranForPayload(result.upsize.size)}`
+        }
+      ];
+
+      session.state = "showing_motor_recommendations";
+      await this.sendTextMessage(senderId, text, quickReplies);
+    } catch (error) {
+      console.error("Error in showMotorRecommendations:", error);
+      // Reset session on error
+      session.state = null;
+      session.motorType = null;
+      session.motorPosition = null;
+      await this.sendTextMessage(senderId, `Maaf, ada error saat mengecek rekomendasi 😔\n\nBisa ketik ukuran ban langsung? Contoh: 80/90-14`);
+    }
   }
 
   async handleAttachment(senderId, attachments, session) {
     await this.sendTextMessage(
       senderId,
-      "Terima kasih! Untuk order, ketik 'katalog' 😊"
+      `Terima kasih! Untuk order, klik link WhatsApp di bawah 😊\n\n📞 ${this.getWhatsAppLink()}`,
+      [
+        { content_type: "text", title: "🔍 Lihat Ban", payload: "LIAT_LAGI" },
+      ]
     );
   }
 }
