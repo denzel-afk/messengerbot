@@ -72,15 +72,18 @@ class SheetsService {
     try {
       // Use environment variables if available (production), otherwise read from file (local)
       let credentials;
-      if (process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL && process.env.GOOGLE_PRIVATE_KEY) {
+      if (
+        process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL &&
+        process.env.GOOGLE_PRIVATE_KEY
+      ) {
         credentials = {
           client_email: process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL,
-          private_key: process.env.GOOGLE_PRIVATE_KEY.replace(/\\n/g, '\n'), // Handle escaped newlines
+          private_key: process.env.GOOGLE_PRIVATE_KEY.replace(/\\n/g, "\n"), // Handle escaped newlines
         };
         console.log("Using Google credentials from environment variables");
       } else {
         credentials = JSON.parse(
-          fs.readFileSync("./data/credentials.json", "utf8")
+          fs.readFileSync("./data/credentials.json", "utf8"),
         );
         console.log("Using Google credentials from local file");
       }
@@ -99,7 +102,7 @@ class SheetsService {
 
       console.log(`Connected to: "${this.doc.title}"`);
       console.log(
-        `Available sheets: ${Object.keys(this.doc.sheetsByTitle).join(", ")}`
+        `Available sheets: ${Object.keys(this.doc.sheetsByTitle).join(", ")}`,
       );
 
       this.connected = true;
@@ -131,7 +134,7 @@ class SheetsService {
       await this.ensureConnected();
 
       const sheetEntry = Object.entries(this.categoryMap).find(
-        ([, info]) => info.name === String(categoryName || "").toLowerCase()
+        ([, info]) => info.name === String(categoryName || "").toLowerCase(),
       );
 
       if (!sheetEntry) {
@@ -162,7 +165,7 @@ class SheetsService {
 
     if (!columnMap) {
       console.warn(
-        `No column mapping found for ${sheetName}, using generic parser`
+        `No column mapping found for ${sheetName}, using generic parser`,
       );
       return this.parseGenericProducts(rows, categoryName);
     }
@@ -180,7 +183,7 @@ class SheetsService {
                 row,
                 index,
                 categoryName,
-                columnMap
+                columnMap,
               );
             case "Sheet_Cat":
               return this.parseCatProduct(row, index, categoryName, columnMap);
@@ -190,7 +193,7 @@ class SheetsService {
         } catch (error) {
           console.warn(
             `Error parsing row ${index + 1} in ${sheetName}:`,
-            error.message
+            error.message,
           );
           return null;
         }
@@ -215,7 +218,7 @@ class SheetsService {
           products
             .map((p) => p.brand)
             .filter((b) => b && String(b).trim() !== "")
-            .map((b) => String(b).trim())
+            .map((b) => String(b).trim()),
         ),
       ];
 
@@ -230,24 +233,24 @@ class SheetsService {
   async getProductsByBrand(categoryName, brandName) {
     try {
       console.log(
-        `🔍 Getting products for category: ${categoryName}, brand: ${brandName}`
+        `🔍 Getting products for category: ${categoryName}, brand: ${brandName}`,
       );
 
       const products = await this.getProductsByCategory(categoryName);
       const target = String(brandName || "").toLowerCase();
 
       const brandProducts = products.filter(
-        (p) => p.brand && String(p.brand).toLowerCase() === target
+        (p) => p.brand && String(p.brand).toLowerCase() === target,
       );
 
       console.log(
-        `📦 Found ${brandProducts.length} products for brand "${brandName}"`
+        `📦 Found ${brandProducts.length} products for brand "${brandName}"`,
       );
       return brandProducts;
     } catch (error) {
       console.error(
         `Error getting products for brand ${brandName}:`,
-        error.message
+        error.message,
       );
       return [];
     }
@@ -440,7 +443,7 @@ class SheetsService {
 
       if (fileId) {
         // Use thumbnail endpoint that works better with Facebook
-        return `https://drive.google.com/thumbnail?id=${fileId}&sz=w1000`;
+        return `https://drive.google.com/uc?export=view&id=${fileId}`;
       }
     }
 
@@ -479,7 +482,7 @@ class SheetsService {
         console.error(`❌ Sheet_Penjualan not found!`);
         console.error(`📋 Available sheets: ${availableSheets}`);
         throw new Error(
-          "Sheet_Penjualan not found! Please create it manually."
+          "Sheet_Penjualan not found! Please create it manually.",
         );
       }
 
@@ -544,7 +547,7 @@ class SheetsService {
         product.brand?.toLowerCase().includes(searchLower) ||
         product.ukuran?.toLowerCase().includes(searchLower) ||
         product.type?.toLowerCase().includes(searchLower) ||
-        product.color?.toLowerCase().includes(searchLower)
+        product.color?.toLowerCase().includes(searchLower),
     );
   }
 
@@ -710,7 +713,7 @@ SheetsService.prototype.getPackOliList = async function () {
 
     // unique and sort numerically
     const uniq = [...new Set(packs)].sort(
-      (a, b) => parseFloat(a) - parseFloat(b)
+      (a, b) => parseFloat(a) - parseFloat(b),
     );
     return uniq;
   } catch (error) {
