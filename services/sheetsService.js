@@ -421,29 +421,27 @@ class SheetsService {
     const u = String(url || "").trim();
     if (!u) return "";
 
-    // Handle Google Drive URLs - extract file ID and convert to direct link
     if (u.includes("drive.google.com")) {
       let fileId = null;
 
-      // Match /d/{fileId} pattern
-      let m = u.match(/\/d\/([a-zA-Z0-9-_]+)/);
-      if (m) fileId = m[1];
+      const patterns = [
+        /\/d\/([a-zA-Z0-9-_]+)/,
+        /\/file\/d\/([a-zA-Z0-9-_]+)/,
+        /[?&]id=([a-zA-Z0-9-_]+)/,
+        /\/open\?id=([a-zA-Z0-9-_]+)/,
+      ];
 
-      // Match /file/d/{fileId} pattern
-      if (!fileId) {
-        m = u.match(/\/file\/d\/([a-zA-Z0-9-_]+)/);
-        if (m) fileId = m[1];
-      }
-
-      // Match ?id={fileId} pattern
-      if (!fileId) {
-        m = u.match(/[?&]id=([a-zA-Z0-9-_]+)/);
-        if (m) fileId = m[1];
+      for (const pattern of patterns) {
+        const m = u.match(pattern);
+        if (m) {
+          fileId = m[1];
+          break;
+        }
       }
 
       if (fileId) {
-        // Use thumbnail endpoint that works better with Facebook
-        return `https://drive.google.com/uc?export=view&id=${fileId}`;
+        // ✅ Gunakan thumbnail URL - ini yang paling kompatibel dengan FB Messenger
+        return `https://drive.google.com/thumbnail?id=${fileId}&sz=w800`;
       }
     }
 
