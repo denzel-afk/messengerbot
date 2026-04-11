@@ -441,7 +441,7 @@ class SheetsService {
 
       if (fileId) {
         // ✅ Gunakan thumbnail URL - ini yang paling kompatibel dengan FB Messenger
-        return `https://drive.google.com/thumbnail?id=${fileId}&sz=w800`;
+        return `https://drive.google.com/uc?export=view&id=${fileId}`;
       }
     }
 
