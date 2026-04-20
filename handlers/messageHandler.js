@@ -781,12 +781,82 @@ class MessageHandler {
       if (session.onlyPreferredShown) {
         const isNegative = negativePatterns.some((r) => r.test(textLower));
         if (isNegative) {
+          // Try to show remaining non-preferred products from the original full results
+          try {
+            const preferredOrder = ["maxxis", "irc", "fdr"];
+            const others = (session.fullMatchedProducts || []).filter((p) => {
+              const brand = String(p.brand || p.MERK || "").toLowerCase();
+              return !preferredOrder.some((pref) => brand.includes(pref));
+            });
+
+            if (others.length > 0) {
+              // Replace session.allProducts with others and reset pagination
+              session.allProducts = others;
+              session.onlyPreferredShown = false;
+              session.currentPage = 1;
+              session.totalPages = Math.ceil(others.length / 10);
+              session.state = "show_products";
+              await this.showBanProducts(senderId, session);
+              return;
+            }
+          } catch (error) {
+            console.error("Error finding non-preferred products:", error);
+          }
+
+          // If no others found, fall back to asking for brand
           session.state = "waiting_brand_name";
           await this.sendTextMessage(
             senderId,
             "Oke juragan, merk apa yang juragan mau? Ketik nama merk-nya saja, misal: Michelin, Pirelli",
           );
           return;
+        }
+      }
+
+      // If user typed a brand name directly (e.g., 'michelin') while in after_products, apply it
+      // Preserve existing size filters (banUkuran or banSize)
+      const looksLikeBrandInput =
+        textLower.length <= 30 &&
+        !textLower.includes("/") &&
+        !textLower.includes("-") &&
+        /[a-z]/.test(textLower);
+
+      if (looksLikeBrandInput) {
+        try {
+          const allBanProducts =
+            await sheetsService.getProductsByCategory("ban");
+          const allBrands = new Set();
+          allBanProducts.forEach((product) => {
+            const brand = String(product.brand || product.MERK || "")
+              .toLowerCase()
+              .trim();
+            if (brand) allBrands.add(brand);
+          });
+
+          const matchedBrand = Array.from(allBrands).find(
+            (b) => textLower.includes(b) || b.includes(textLower),
+          );
+
+          if (matchedBrand) {
+            session.banBrandPattern = matchedBrand;
+
+            if (session.banUkuran || session.banSize) {
+              session.state = "show_products";
+              await this.showBanProducts(senderId, session);
+              return;
+            } else {
+              session.state = "waiting_brand_size";
+              const displayName =
+                matchedBrand.charAt(0).toUpperCase() + matchedBrand.slice(1);
+              await this.sendTextMessage(
+                senderId,
+                `Ah mau ban ${displayName}, ukuran berapa juragan?\n\nContoh: 80/90-14`,
+              );
+              return;
+            }
+          }
+        } catch (error) {
+          console.error("Error matching brand in after_products:", error);
         }
       }
 
@@ -1543,7 +1613,9 @@ Sampai jumpa lagi, juragan! 👋`;
           return baseMatch;
         });
 
-        // Store results for pagination
+        // Store full results for later use (e.g., switching from preferred to others)
+        session.fullMatchedProducts = matchedProducts;
+
         // Prefer to show only products from MAXXIS / IRC / FDR if any exist.
         const preferredOrder = ["maxxis", "irc", "fdr"];
         const preferredProducts = matchedProducts.filter((p) => {
