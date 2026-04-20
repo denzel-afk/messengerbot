@@ -772,6 +772,24 @@ class MessageHandler {
         return;
       }
 
+      // If we previously showed only preferred brands and user dislikes them, ask for desired merk
+      const negativePatterns = [
+        /^(gak\s*mau|ga\s*mau|tidak\s*mau|bukan|selain|lain|nggak\s*mau)$/i,
+        /(^tidak|^enggak|^gak)\b/i,
+      ];
+
+      if (session.onlyPreferredShown) {
+        const isNegative = negativePatterns.some((r) => r.test(textLower));
+        if (isNegative) {
+          session.state = "waiting_brand_name";
+          await this.sendTextMessage(
+            senderId,
+            "Oke juragan, merk apa yang juragan mau? Ketik nama merk-nya saja, misal: Michelin, Pirelli",
+          );
+          return;
+        }
+      }
+
       // If from motor flow, offer depan lagi/belakang/selesai
       if (session.motorType) {
         if (["depan lagi", "liat depan lagi"].includes(textLower)) {
@@ -1673,7 +1691,7 @@ Sampai jumpa lagi, juragan! 👋`;
 
           await this.sendTextMessage(
             senderId,
-            "Udah liat ban depan. Mau cari untuk motor lain, atau mau liat yang belakang untuk motor yang sama?",
+            "Udah liat ban depan. Mau cari untuk motor lain, atau mau liat yang belakang untuk motor yang sama atau masih mau lihat2 ban depan (bisa klik selanjutnya)?",
             quickReplies,
           );
         } else {
@@ -1698,7 +1716,7 @@ Sampai jumpa lagi, juragan! 👋`;
 
           await this.sendTextMessage(
             senderId,
-            "Udah liat ban belakang. Mau liat depannya, atau cari untuk motor lain?",
+            "Udah liat ban belakang. Mau liat depannya, atau cari untuk motor lain atau cari merk lain (klik selanjutnya)?",
             quickReplies,
           );
         }
