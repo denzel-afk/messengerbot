@@ -15,7 +15,9 @@ class MessageHandler {
   getWhatsAppLink() {
     const number = this.getWhatsAppNumber();
     // Convert 08xxx to 628xxx for international format
-    const internationalNumber = number.startsWith('0') ? '62' + number.substring(1) : number;
+    const internationalNumber = number.startsWith("0")
+      ? "62" + number.substring(1)
+      : number;
     return `https://wa.me/${internationalNumber}`;
   }
 
@@ -47,7 +49,7 @@ class MessageHandler {
         await this.handleQuickReply(
           senderId,
           messageData.quick_reply.payload,
-          session
+          session,
         );
         return;
       }
@@ -64,14 +66,14 @@ class MessageHandler {
 
       await this.sendTextMessage(
         senderId,
-        "Maaf, Bella tidak mengerti format pesan tersebut 😅"
+        "Maaf, Bella tidak mengerti format pesan tersebut 😅",
       );
     } catch (error) {
       console.error("❌ Error handling message:");
       console.error("Error name:", error?.name);
       console.error("Error message:", error?.message);
       console.error("Error stack:", error?.stack);
-      
+
       // Reset session on error
       const session = this.userSessions.get(senderId);
       if (session) {
@@ -84,7 +86,10 @@ class MessageHandler {
         session.motorType = null;
         session.motorPosition = null;
       }
-      await this.sendTextMessage(senderId, "Maaf, ada error. Coba lagi ya! 🙏\n\nKetik ukuran ban atau tipe motor untuk mulai lagi.");
+      await this.sendTextMessage(
+        senderId,
+        "Maaf, ada error. Coba lagi ya! 🙏\n\nKetik ukuran ban atau tipe motor untuk mulai lagi.",
+      );
     }
   }
 
@@ -94,6 +99,74 @@ class MessageHandler {
   async handleTextMessage(senderId, text, session) {
     const rawText = String(text || "");
     const textLower = rawText.toLowerCase().trim();
+
+    // If user was asked to provide manual size, process it here
+    if (session && session.state === "awaiting_manual_size") {
+      // Reuse existing parsing logic: complete or incomplete size
+      if (this.looksLikeCompleteBanSize(rawText)) {
+        session.banUkuran = this.normalizeBanSize(rawText);
+        session.state = "show_products";
+        await this.showBanProducts(senderId, session);
+        return;
+      }
+
+      if (this.looksLikeIncompleteBanSize(rawText)) {
+        const [size, ring] = this.parseBanSize(rawText);
+        session.banSize = size;
+        session.banRing = ring;
+        if (!ring) {
+          session.state = "waiting_ring";
+          await this.askForRingSize(senderId, session);
+          return;
+        } else {
+          session.banUkuran = `${size}-${ring}`;
+          session.state = "show_products";
+          await this.showBanProducts(senderId, session);
+          return;
+        }
+      }
+
+      // If parsing failed, ask again
+      await this.sendTextMessage(
+        senderId,
+        "Maaf, formatnya belum pas. Contoh format: 80/90-14 atau cuma lebar: 80",
+      );
+      return;
+    }
+
+    // If this is the user's first message in a new session, always send the custom welcome
+    if (session && session.isNew) {
+      // Keep it short and direct as requested
+      await this.sendTextMessage(
+        senderId,
+        "Hallo juragan, dengan Bella Gudang Ban. Cari ban apa?",
+      );
+      // mark not new so next messages are processed normally
+      session.isNew = false;
+      return;
+    }
+
+    // ========== STATE: WAITING FOR BRAND NAME (USER CHOSE 'MERK LAIN') ==========
+    if (session && session.state === "waiting_brand_name") {
+      const brand = rawText.toLowerCase().trim();
+      session.banBrandPattern = brand;
+
+      // If we already have a size (banUkuran or banSize), show products filtered by this brand immediately
+      if (session.banUkuran || session.banSize) {
+        session.state = "show_products";
+        await this.showBanProducts(senderId, session);
+        return;
+      }
+
+      // Otherwise, ask for size (preserve brandPattern for filtering when size provided)
+      session.state = "waiting_brand_size";
+      const displayName = brand.charAt(0).toUpperCase() + brand.slice(1);
+      await this.sendTextMessage(
+        senderId,
+        `Ah mau ban ${displayName}, ukuran berapa juragan?\n\nContoh: 80/90-14`,
+      );
+      return;
+    }
 
     // ========== DIRECT BAN SIZE INPUT (COMPLETE) - CHECK FIRST ==========
     if (this.looksLikeCompleteBanSize(rawText)) {
@@ -105,14 +178,30 @@ class MessageHandler {
 
     // ========== MOTOR TYPE DETECTION (GPT-POWERED) - PRIORITIZE BEFORE WIDTH ==========
     // This prevents "Vario 150" from being detected as width 150
+    // QUICK CHECK: if user asks about car tires, respond that we don't handle ban mobil
     try {
+      const carPattern =
+        /\bmobil\b|\bcar\b|\bban mobil\b|\bavanza\b|\binnova\b|\bxenia\b|\bbrio\b|\bcity\b|\bjazz\b|\byaris\b|\bcorolla\b|\bfortuner\b|\bpajero\b|\bmobilio\b|\btoyota\b|\bmitsubishi\b/i;
+      if (carPattern.test(rawText)) {
+        await this.sendTextMessage(
+          senderId,
+          "Ga tau, kalo soal ban mobil Bella nggak ngerti.",
+        );
+        return;
+      }
+
+      // Continue to motorcycle detection
       const isMotorcycle = await gptService.isMotorcycleRelated(rawText);
       if (isMotorcycle) {
         session.motorType = rawText.trim();
         session.state = "waiting_motor_position";
         await this.sendTextMessage(senderId, "Ban depan atau belakang?", [
           { content_type: "text", title: "Depan", payload: "MOTOR_DEPAN" },
-          { content_type: "text", title: "Belakang", payload: "MOTOR_BELAKANG" },
+          {
+            content_type: "text",
+            title: "Belakang",
+            payload: "MOTOR_BELAKANG",
+          },
         ]);
         return;
       }
@@ -126,7 +215,7 @@ class MessageHandler {
       const [size, ring] = this.parseBanSize(rawText);
       session.banSize = size;
       session.banRing = ring;
-      
+
       if (!ring) {
         session.state = "waiting_ring";
         await this.askForRingSize(senderId, session);
@@ -143,7 +232,7 @@ class MessageHandler {
     // Try simple pattern first: "80", "90", "100"
     let extractedWidth = null;
     let invalidWidth = false;
-    
+
     const singleWidthMatch = rawText.match(/^\s*(\d{2,3})\s*$/);
     if (singleWidthMatch) {
       const widthNum = parseInt(singleWidthMatch[1]);
@@ -154,7 +243,7 @@ class MessageHandler {
         invalidWidth = true;
       }
     }
-    
+
     // If simple match fails, try GPT extraction from natural language
     if (!extractedWidth && !invalidWidth) {
       try {
@@ -172,42 +261,51 @@ class MessageHandler {
         console.error("Error extracting width from text:", error);
       }
     }
-    
+
     // Handle invalid width
     if (invalidWidth) {
       await this.sendTextMessage(
         senderId,
-        "Hmm, Bella kurang paham dengan ukuran tersebut 😅\n\nBoleh kasih ukuran ban yang lebih jelas?\n\nContoh:\n• 80/90-14\n• 100/80-17\n• atau tipe motor: Yamaha Mio, Honda Beat"
+        "Hmm, Bella kurang paham dengan ukuran tersebut 😅\n\nBoleh kasih ukuran ban yang lebih jelas?\n\nContoh:\n• 80/90-14\n• 100/80-17\n• atau tipe motor: Yamaha Mio, Honda Beat",
       );
       return;
     }
-    
+
     // If width is extracted and valid, show recommendations
     if (extractedWidth) {
       try {
         await this.sendTypingOn(senderId);
-        
-        // Get GPT recommendations for complete sizes
-        const recommendedSizes = await gptService.getCompleteBanSizeFromWidth(extractedWidth);
-        
+
+        // Get GPT recommendations for complete sizes (we'll use the first as standard)
+        const recommendedSizes =
+          await gptService.getCompleteBanSizeFromWidth(extractedWidth);
+
         if (recommendedSizes.length > 0) {
-          const sizeButtons = recommendedSizes.map(size => ({
-            content_type: "text",
-            title: size,
-            payload: `SIZE_${size}`
-          }));
-          
+          const standard = recommendedSizes[0];
+          const sizeButtons = [
+            {
+              content_type: "text",
+              title: standard,
+              payload: `SIZE_${standard}`,
+            },
+            {
+              content_type: "text",
+              title: "Ada ukuran lain",
+              payload: "OTHER_SIZE",
+            },
+          ];
+
           await this.sendTextMessage(
-            senderId, 
-            `Oh ban ${extractedWidth} ya! Biasanya ukuran ban dengan lebar luar ${extractedWidth} adalah:\n\n${recommendedSizes.map((s, i) => `${i + 1}. ${s}`).join('\n')}\n\nPilih salah satu atau ketik ukuran lengkap:`,
-            sizeButtons
+            senderId,
+            `Oh ban ${extractedWidth} ya! Biasanya ukuran standar untuk lebar ${extractedWidth} adalah ${standard}.\n\nApakah ini ukuran yang juragan mau atau juragan ada ukuran lain?`,
+            sizeButtons,
           );
           return;
         } else {
           // No recommendations found for this width
           await this.sendTextMessage(
             senderId,
-            `Maaf, Bella tidak menemukan ukuran ban untuk lebar ${extractedWidth} 😔\n\nBoleh coba ketik ukuran lengkap atau tipe motor?\n\nContoh:\n• 80/90-14\n• Yamaha Mio\n• Honda Beat`
+            `Maaf, Bella tidak menemukan ukuran ban untuk lebar ${extractedWidth} 😔\n\nBoleh coba ketik ukuran lengkap atau tipe motor?\n\nContoh:\n• 80/90-14\n• Yamaha Mio\n• Honda Beat`,
           );
           return;
         }
@@ -233,7 +331,10 @@ class MessageHandler {
       session.banSearchQuery = null;
       session.motorType = null;
       session.motorPosition = null;
-      await this.sendWelcomeMessage(senderId);
+      await this.sendTextMessage(
+        senderId,
+        "Oke juragan, mau cari ban apa lagi?",
+      );
       return;
     }
 
@@ -244,9 +345,11 @@ class MessageHandler {
       /\b(kurang\s*paham|gak\s*ngerti|ga\s*ngerti|nggak\s*ngerti|tidak\s*tahu)\b/i,
       /\b(gimana|bagaimana|apa\s*ya|yang\s*mana|mana\s*ya)\b/i,
     ];
-    
-    let isConfused = confusionPatterns.some(pattern => pattern.test(textLower));
-    
+
+    let isConfused = confusionPatterns.some((pattern) =>
+      pattern.test(textLower),
+    );
+
     // If pattern doesn't match, try GPT for nuanced confusion detection
     if (!isConfused) {
       try {
@@ -256,7 +359,7 @@ class MessageHandler {
         // Continue if GPT fails
       }
     }
-    
+
     if (isConfused) {
       session.state = null;
       session.banSize = null;
@@ -266,10 +369,10 @@ class MessageHandler {
       session.banSearchQuery = null;
       session.motorType = null;
       session.motorPosition = null;
-      
+
       await this.sendTextMessage(
-        senderId, 
-        "Gak apa-apa juragan! Kalau bingung ukuran ban nya, bisa kasih tau nama motornya aja 😊\n\nContoh:\n• Honda Beat\n• Yamaha Mio\n• Suzuki Nex\n• atau motor lainnya"
+        senderId,
+        "Gak apa-apa juragan! Kalau bingung ukuran ban nya, bisa kasih tau nama motornya aja 😊\n\nContoh:\n• Honda Beat\n• Yamaha Mio\n• Suzuki Nex\n• atau motor lainnya",
       );
       return;
     }
@@ -278,29 +381,36 @@ class MessageHandler {
     if (session.state === "waiting_ring") {
       // Extract number from user's message
       let extractedNumber = this.extractRingSize(rawText);
-      
+
       // If direct extraction fails, try GPT
       if (!extractedNumber) {
         try {
           extractedNumber = await gptService.extractRingSizeFromText(rawText);
           if (extractedNumber) {
-            console.log(`GPT extracted ring number: ${extractedNumber} from "${rawText}"`);
+            console.log(
+              `GPT extracted ring number: ${extractedNumber} from "${rawText}"`,
+            );
           }
         } catch (error) {
           console.error("Error in GPT ring size extraction:", error);
         }
       }
-      
+
       if (extractedNumber) {
         // Get available ring sizes for this ban size
         try {
-          const allBanProducts = await sheetsService.getProductsByCategory("ban");
+          const allBanProducts =
+            await sheetsService.getProductsByCategory("ban");
           const availableRings = new Set();
-          
-          allBanProducts.forEach(product => {
-            const spec = String(product.specifications || product.SPESIFIKASI || "");
+
+          allBanProducts.forEach((product) => {
+            const spec = String(
+              product.specifications || product.SPESIFIKASI || "",
+            );
             if (spec.includes(session.banSize)) {
-              const match = spec.match(new RegExp(`${session.banSize.replace(/\//g, "\\/")}-(\\d{2})`));
+              const match = spec.match(
+                new RegExp(`${session.banSize.replace(/\//g, "\\/")}-(\\d{2})`),
+              );
               if (match) {
                 availableRings.add(match[1]);
               }
@@ -308,15 +418,15 @@ class MessageHandler {
           });
 
           const availableRingsArray = Array.from(availableRings);
-          
+
           // Match extracted number with available rings - EXACT MATCH ONLY
           let matchedRing = null;
-          
+
           if (availableRingsArray.includes(extractedNumber)) {
             // Exact match found
             matchedRing = extractedNumber;
           }
-          
+
           if (matchedRing) {
             session.banRing = matchedRing;
             session.banUkuran = `${session.banSize}-${matchedRing}`;
@@ -327,11 +437,17 @@ class MessageHandler {
             // No exact match - ask for correct ring size
             if (availableRingsArray.length > 0) {
               const ringList = availableRingsArray.join(", ");
-              await this.sendTextMessage(senderId, `Maaf, ring ${extractedNumber} tidak tersedia untuk ban ${session.banSize} 😔\n\nRing yang tersedia: ${ringList}\n\nSilakan pilih salah satu atau ketik ring yang benar.`);
+              await this.sendTextMessage(
+                senderId,
+                `Maaf, ring ${extractedNumber} tidak tersedia untuk ban ${session.banSize} 😔\n\nRing yang tersedia: ${ringList}\n\nSilakan pilih salah satu atau ketik ring yang benar.`,
+              );
               return;
             } else {
               // No available rings at all
-              await this.sendTextMessage(senderId, `Maaf, tidak ada ring yang tersedia untuk ban ${session.banSize} 😔\n\nKetik ulang ukuran ban atau tipe motor yang juragan cari.`);
+              await this.sendTextMessage(
+                senderId,
+                `Maaf, tidak ada ring yang tersedia untuk ban ${session.banSize} 😔\n\nKetik ulang ukuran ban atau tipe motor yang juragan cari.`,
+              );
               session.state = null;
               session.banSize = null;
               return;
@@ -340,7 +456,10 @@ class MessageHandler {
         } catch (error) {
           console.error("Error matching ring size:", error);
           // On error, ask user to try again
-          await this.sendTextMessage(senderId, "Maaf, ada error. Boleh ketik ukuran ring lagi? Contoh: 14, 17, 10");
+          await this.sendTextMessage(
+            senderId,
+            "Maaf, ada error. Boleh ketik ukuran ring lagi? Contoh: 14, 17, 10",
+          );
           return;
         }
       } else {
@@ -349,23 +468,29 @@ class MessageHandler {
           const isMotorcycle = await gptService.isMotorcycleRelated(rawText);
           if (isMotorcycle) {
             session.motorType = rawText.trim();
-            session.banSize = null;  // Reset ban size
+            session.banSize = null; // Reset ban size
             session.banRing = null;
-            
+
             // Check if position is mentioned in the text
             const positionKeywords = {
               depan: ["depan", "front", "ban depan", "roda depan"],
-              belakang: ["belakang", "back", "rear", "ban belakang", "roda belakang"]
+              belakang: [
+                "belakang",
+                "back",
+                "rear",
+                "ban belakang",
+                "roda belakang",
+              ],
             };
-            
+
             let detectedPosition = null;
             for (const [pos, keywords] of Object.entries(positionKeywords)) {
-              if (keywords.some(kw => textLower.includes(kw))) {
+              if (keywords.some((kw) => textLower.includes(kw))) {
                 detectedPosition = pos;
                 break;
               }
             }
-            
+
             if (detectedPosition) {
               // Position detected, go directly to show recommendations
               session.motorPosition = detectedPosition;
@@ -376,8 +501,16 @@ class MessageHandler {
               // Ask for position
               session.state = "waiting_motor_position";
               await this.sendTextMessage(senderId, "Ban depan atau belakang?", [
-                { content_type: "text", title: "Depan", payload: "MOTOR_DEPAN" },
-                { content_type: "text", title: "Belakang", payload: "MOTOR_BELAKANG" },
+                {
+                  content_type: "text",
+                  title: "Depan",
+                  payload: "MOTOR_DEPAN",
+                },
+                {
+                  content_type: "text",
+                  title: "Belakang",
+                  payload: "MOTOR_BELAKANG",
+                },
               ]);
               return;
             }
@@ -385,8 +518,11 @@ class MessageHandler {
         } catch (error) {
           console.error("Error in motorcycle detection for ring size:", error);
         }
-        
-        await this.sendTextMessage(senderId, "Maaf, Bella kurang paham. Boleh ketik ukuran ring saja? Contoh: 14, 17, 10");
+
+        await this.sendTextMessage(
+          senderId,
+          "Maaf, Bella kurang paham. Boleh ketik ukuran ring saja? Contoh: 14, 17, 10",
+        );
         return;
       }
     }
@@ -404,7 +540,7 @@ class MessageHandler {
         const [size, ring] = this.parseBanSize(rawText);
         session.banSize = size;
         session.banRing = ring;
-        
+
         if (!ring) {
           session.state = "waiting_ring";
           await this.askForRingSize(senderId, session);
@@ -419,10 +555,13 @@ class MessageHandler {
       } else {
         // Try GPT extraction
         try {
-          const extractedSize = await gptService.extractBanSizeFromText(rawText);
+          const extractedSize =
+            await gptService.extractBanSizeFromText(rawText);
           if (extractedSize) {
-            console.log(`GPT extracted ban size: ${extractedSize} from "${rawText}"`);
-            
+            console.log(
+              `GPT extracted ban size: ${extractedSize} from "${rawText}"`,
+            );
+
             if (this.looksLikeCompleteBanSize(extractedSize)) {
               session.banUkuran = this.normalizeBanSize(extractedSize);
               session.banSearchQuery = session.banBrandPattern;
@@ -449,27 +588,33 @@ class MessageHandler {
         } catch (error) {
           console.error("Error in GPT extraction for brand size:", error);
         }
-        
+
         // Check if user provided motorcycle info instead of ban size
         try {
           const isMotorcycle = await gptService.isMotorcycleRelated(rawText);
           if (isMotorcycle) {
             session.motorType = rawText.trim();
-            
+
             // Check if position is mentioned in the text
             const positionKeywords = {
               depan: ["depan", "front", "ban depan", "roda depan"],
-              belakang: ["belakang", "back", "rear", "ban belakang", "roda belakang"]
+              belakang: [
+                "belakang",
+                "back",
+                "rear",
+                "ban belakang",
+                "roda belakang",
+              ],
             };
-            
+
             let detectedPosition = null;
             for (const [pos, keywords] of Object.entries(positionKeywords)) {
-              if (keywords.some(kw => textLower.includes(kw))) {
+              if (keywords.some((kw) => textLower.includes(kw))) {
                 detectedPosition = pos;
                 break;
               }
             }
-            
+
             if (detectedPosition) {
               // Position detected, go directly to show recommendations
               session.motorPosition = detectedPosition;
@@ -481,8 +626,16 @@ class MessageHandler {
               // Ask for position
               session.state = "waiting_motor_position";
               await this.sendTextMessage(senderId, "Ban depan atau belakang?", [
-                { content_type: "text", title: "Depan", payload: "MOTOR_DEPAN" },
-                { content_type: "text", title: "Belakang", payload: "MOTOR_BELAKANG" },
+                {
+                  content_type: "text",
+                  title: "Depan",
+                  payload: "MOTOR_DEPAN",
+                },
+                {
+                  content_type: "text",
+                  title: "Belakang",
+                  payload: "MOTOR_BELAKANG",
+                },
               ]);
               return;
             }
@@ -490,8 +643,11 @@ class MessageHandler {
         } catch (error) {
           console.error("Error in motorcycle detection for brand size:", error);
         }
-        
-        await this.sendTextMessage(senderId, "Maaf, Bella kurang paham. Bisa ketik ukuran ban? Contoh: 80/90-14");
+
+        await this.sendTextMessage(
+          senderId,
+          "Maaf, Bella kurang paham. Bisa ketik ukuran ban? Contoh: 80/90-14",
+        );
         return;
       }
     }
@@ -509,17 +665,29 @@ class MessageHandler {
 
     // ========== STATE: MOTOR POSITION INPUT ==========
     if (session.state === "waiting_motor_position") {
-      const pos = textLower.includes("depan") ? "depan" : textLower.includes("belakang") ? "belakang" : null;
+      const pos = textLower.includes("depan")
+        ? "depan"
+        : textLower.includes("belakang")
+          ? "belakang"
+          : null;
       if (pos) {
         session.motorPosition = pos;
         session.state = "showing_motor_recommendations";
         await this.showMotorRecommendations(senderId, session);
         return;
       } else {
-        await this.sendTextMessage(senderId, "Pilih 'depan' atau 'belakang' ya juragan", [
-          { content_type: "text", title: "Depan", payload: "MOTOR_DEPAN" },
-          { content_type: "text", title: "Belakang", payload: "MOTOR_BELAKANG" },
-        ]);
+        await this.sendTextMessage(
+          senderId,
+          "Pilih 'depan' atau 'belakang' ya juragan",
+          [
+            { content_type: "text", title: "Depan", payload: "MOTOR_DEPAN" },
+            {
+              content_type: "text",
+              title: "Belakang",
+              payload: "MOTOR_BELAKANG",
+            },
+          ],
+        );
         return;
       }
     }
@@ -548,10 +716,13 @@ class MessageHandler {
       } else {
         // Try GPT extraction before giving up
         try {
-          const extractedSize = await gptService.extractBanSizeFromText(rawText);
+          const extractedSize =
+            await gptService.extractBanSizeFromText(rawText);
           if (extractedSize) {
-            console.log(`GPT extracted ban size in motor recommendations: ${extractedSize} from "${rawText}"`);
-            
+            console.log(
+              `GPT extracted ban size in motor recommendations: ${extractedSize} from "${rawText}"`,
+            );
+
             if (this.looksLikeCompleteBanSize(extractedSize)) {
               session.banUkuran = this.normalizeBanSize(extractedSize);
               session.state = "show_products";
@@ -574,10 +745,16 @@ class MessageHandler {
             }
           }
         } catch (error) {
-          console.error("Error in GPT extraction in motor recommendations:", error);
+          console.error(
+            "Error in GPT extraction in motor recommendations:",
+            error,
+          );
         }
-        
-        await this.sendTextMessage(senderId, "Bella kurang paham, bisa ketik ukuran ban yang juragan mau? Contoh: 80/90-14 atau pilih dari rekomendasi di atas");
+
+        await this.sendTextMessage(
+          senderId,
+          "Bella kurang paham, bisa ketik ukuran ban yang juragan mau? Contoh: 80/90-14 atau pilih dari rekomendasi di atas",
+        );
         return;
       }
     }
@@ -594,7 +771,7 @@ class MessageHandler {
         this.userSessions.delete(senderId);
         return;
       }
-      
+
       // If from motor flow, offer depan lagi/belakang/selesai
       if (session.motorType) {
         if (["depan lagi", "liat depan lagi"].includes(textLower)) {
@@ -603,7 +780,9 @@ class MessageHandler {
           await this.showMotorRecommendations(senderId, session);
           return;
         }
-        if (["belakang", "liat belakang", "yang belakang"].includes(textLower)) {
+        if (
+          ["belakang", "liat belakang", "yang belakang"].includes(textLower)
+        ) {
           session.motorPosition = "belakang";
           session.state = "showing_motor_recommendations";
           await this.showMotorRecommendations(senderId, session);
@@ -614,7 +793,11 @@ class MessageHandler {
 
     // ========== STATE: AFTER PRICE CHECK ==========
     if (session.state === "after_price_check") {
-      if (["liat lagi", "lihat lagi", "liat-liat lagi", "cari lagi"].includes(textLower)) {
+      if (
+        ["liat lagi", "lihat lagi", "liat-liat lagi", "cari lagi"].includes(
+          textLower,
+        )
+      ) {
         session.state = null;
         await this.sendWelcomeMessage(senderId);
         return;
@@ -628,12 +811,17 @@ class MessageHandler {
 
     // ========== TRY GPT EXTRACTION FOR BAN SIZE ==========
     // If text doesn't match direct patterns but might contain a size like "ban 90/90" or "saya cari 80/90"
-    if (!this.looksLikeCompleteBanSize(rawText) && !this.looksLikeIncompleteBanSize(rawText)) {
+    if (
+      !this.looksLikeCompleteBanSize(rawText) &&
+      !this.looksLikeIncompleteBanSize(rawText)
+    ) {
       try {
         const extractedSize = await gptService.extractBanSizeFromText(rawText);
         if (extractedSize) {
-          console.log(`GPT extracted ban size: ${extractedSize} from "${rawText}"`);
-          
+          console.log(
+            `GPT extracted ban size: ${extractedSize} from "${rawText}"`,
+          );
+
           // Check if it's complete or incomplete
           if (this.looksLikeCompleteBanSize(extractedSize)) {
             session.banUkuran = this.normalizeBanSize(extractedSize);
@@ -644,7 +832,7 @@ class MessageHandler {
             const [size, ring] = this.parseBanSize(extractedSize);
             session.banSize = size;
             session.banRing = ring;
-            
+
             if (!ring) {
               session.state = "waiting_ring";
               await this.askForRingSize(senderId, session);
@@ -666,59 +854,101 @@ class MessageHandler {
     // ========== BRAND/PATTERN DETECTION ==========
     const brandPatternKeywords = [
       // Brands
-      "aspira", "fdr", "corsa", "irc", "maxxis", "michelin", 
-      "pirelli", "dunlop", "swallow", "zeneos", "mizzle",
+      "aspira",
+      "fdr",
+      "corsa",
+      "irc",
+      "maxxis",
+      "michelin",
+      "pirelli",
+      "dunlop",
+      "swallow",
+      "zeneos",
+      "mizzle",
       // Patterns
-      "platinum", "diamond", "sportivo", "strada", "evoluzion",
-      "battlax", "tubeless", "r46", "r26", "r93", "victra", 
-      "pilot", "city", "scooter", "sport", "touring"
+      "platinum",
+      "diamond",
+      "sportivo",
+      "strada",
+      "evoluzion",
+      "battlax",
+      "tubeless",
+      "r46",
+      "r26",
+      "r93",
+      "victra",
+      "pilot",
+      "city",
+      "scooter",
+      "sport",
+      "touring",
     ];
-    const containsBrandPattern = brandPatternKeywords.some(kw => textLower.includes(kw));
-    
+    const containsBrandPattern = brandPatternKeywords.some((kw) =>
+      textLower.includes(kw),
+    );
+
     if (containsBrandPattern) {
       // Find which brand/pattern was mentioned
-      const mentioned = brandPatternKeywords.find(kw => textLower.includes(kw));
+      const mentioned = brandPatternKeywords.find((kw) =>
+        textLower.includes(kw),
+      );
       session.banBrandPattern = mentioned;
       session.state = "waiting_brand_size";
-      
+
       // Capitalize first letter for display
-      const displayName = mentioned.charAt(0).toUpperCase() + mentioned.slice(1);
-      await this.sendTextMessage(senderId, `Ah mau ban ${displayName}, ukuran berapa juragan?\n\nContoh: 80/90-14`);
+      const displayName =
+        mentioned.charAt(0).toUpperCase() + mentioned.slice(1);
+      await this.sendTextMessage(
+        senderId,
+        `Ah mau ban ${displayName}, ukuran berapa juragan?\n\nContoh: 80/90-14`,
+      );
       return;
     }
-    
+
     // ========== GPT-BASED BRAND/PATTERN DETECTION (FALLBACK) ==========
     // If text doesn't match known patterns, try GPT to detect if it's a brand/pattern name
-    if (textLower.length <= 20 && !textLower.includes('/') && !textLower.includes('-')) {
+    if (
+      textLower.length <= 20 &&
+      !textLower.includes("/") &&
+      !textLower.includes("-")
+    ) {
       try {
         const allBanProducts = await sheetsService.getProductsByCategory("ban");
         const allBrands = new Set();
         const allPatterns = new Set();
-        
-        allBanProducts.forEach(product => {
-          const brand = String(product.brand || product.MERK || "").toLowerCase().trim();
-          const pattern = String(product.pattern || product.PATTERN || "").toLowerCase().trim();
-          
+
+        allBanProducts.forEach((product) => {
+          const brand = String(product.brand || product.MERK || "")
+            .toLowerCase()
+            .trim();
+          const pattern = String(product.pattern || product.PATTERN || "")
+            .toLowerCase()
+            .trim();
+
           if (brand) allBrands.add(brand);
           if (pattern) allPatterns.add(pattern);
         });
-        
+
         // Check if user's text matches any brand or pattern from sheets
-        const matchedBrand = Array.from(allBrands).find(b => 
-          textLower.includes(b) || b.includes(textLower)
+        const matchedBrand = Array.from(allBrands).find(
+          (b) => textLower.includes(b) || b.includes(textLower),
         );
-        const matchedPattern = Array.from(allPatterns).find(p => 
-          textLower.includes(p) || p.includes(textLower)
+        const matchedPattern = Array.from(allPatterns).find(
+          (p) => textLower.includes(p) || p.includes(textLower),
         );
-        
+
         if (matchedBrand || matchedPattern) {
           const matched = matchedBrand || matchedPattern;
           session.banBrandPattern = matched;
           session.state = "waiting_brand_size";
-          
+
           // Capitalize first letter for display
-          const displayName = matched.charAt(0).toUpperCase() + matched.slice(1);
-          await this.sendTextMessage(senderId, `Ah mau ban ${displayName}, ukuran berapa juragan?\n\nContoh: 80/90-14`);
+          const displayName =
+            matched.charAt(0).toUpperCase() + matched.slice(1);
+          await this.sendTextMessage(
+            senderId,
+            `Ah mau ban ${displayName}, ukuran berapa juragan?\n\nContoh: 80/90-14`,
+          );
           return;
         }
       } catch (error) {
@@ -729,14 +959,33 @@ class MessageHandler {
 
     // ========== GREETING DETECTION ==========
     const greetings = [
-      "halo", "hello", "hai", "hi", "hey", "hallo", "helo",
-      "selamat pagi", "pagi", "selamat siang", "siang",
-      "selamat sore", "sore", "selamat malam", "malam",
-      "assalamualaikum", "assalamu'alaikum", "salam",
-      "permisi", "gan", "juragan", "bro", "sis",
-      "start", "mulai"
+      "halo",
+      "hello",
+      "hai",
+      "hi",
+      "hey",
+      "hallo",
+      "helo",
+      "selamat pagi",
+      "pagi",
+      "selamat siang",
+      "siang",
+      "selamat sore",
+      "sore",
+      "selamat malam",
+      "malam",
+      "assalamualaikum",
+      "assalamu'alaikum",
+      "salam",
+      "permisi",
+      "gan",
+      "juragan",
+      "bro",
+      "sis",
+      "start",
+      "mulai",
     ];
-    
+
     if (greetings.includes(textLower)) {
       await this.sendWelcomeMessage(senderId);
       return;
@@ -759,18 +1008,18 @@ class MessageHandler {
     // Check if message is related to tires/ban
     try {
       const isBanRelated = await gptService.isBanRelated(rawText);
-      
+
       if (isBanRelated) {
         // Ban-related but we don't understand - friendly response
         await this.sendTextMessage(
           senderId,
-          `Ah iya, kita menyediakan ban! Mau ban apa?\n\n• Ketik ukuran ban (contoh: 80/90-14)\n• Atau ketik tipe motor (contoh: Yamaha Mio)`
+          `Ah iya, kita menyediakan ban! Mau ban apa?\n\n• Ketik ukuran ban (contoh: 80/90-14)\n• Atau ketik tipe motor (contoh: Yamaha Mio)`,
         );
       } else {
         // Not ban-related - simple don't understand
         await this.sendTextMessage(
           senderId,
-          `Maaf, Bella kurang paham. Untuk info lebih lanjut klik link:\n📞 ${this.getWhatsAppLink()}`
+          `Maaf, Bella kurang paham. Untuk info lebih lanjut klik link:\n📞 ${this.getWhatsAppLink()}`,
         );
       }
     } catch (error) {
@@ -778,7 +1027,7 @@ class MessageHandler {
       // Fallback: simple don't understand
       await this.sendTextMessage(
         senderId,
-        `Maaf, Bella kurang paham. Untuk info lebih lanjut klik link:\n📞 ${this.getWhatsAppLink()}`
+        `Maaf, Bella kurang paham. Untuk info lebih lanjut klik link:\n📞 ${this.getWhatsAppLink()}`,
       );
     }
   }
@@ -792,7 +1041,10 @@ class MessageHandler {
 
     // ---------- BAN SIZE FROM RECOMMENDATIONS ----------
     if (payload.startsWith("BAN_SIZE_")) {
-      const size = payload.replace("BAN_SIZE_", "").replace(/_/g, "/").replace(/~/g, "-");
+      const size = payload
+        .replace("BAN_SIZE_", "")
+        .replace(/_/g, "/")
+        .replace(/~/g, "-");
       session.banUkuran = size;
       session.state = "show_products";
       await this.showBanProducts(senderId, session);
@@ -805,6 +1057,16 @@ class MessageHandler {
       session.banSize = size;
       session.state = "waiting_ring";
       await this.askForRingSize(senderId, session);
+      return;
+    }
+
+    // ---------- USER WILL PROVIDE ANOTHER SIZE MANUALLY ----------
+    if (payload === "OTHER_SIZE") {
+      session.state = "awaiting_manual_size";
+      await this.sendTextMessage(
+        senderId,
+        "Oke juragan, ketik ukuran lengkap yang juragan mau (contoh: 80/90-14) atau hanya lebar (contoh: 80)",
+      );
       return;
     }
 
@@ -835,7 +1097,10 @@ class MessageHandler {
 
     // ---------- MOTOR SIZE CHOICE ----------
     if (payload.startsWith("MOTOR_CHOOSE_")) {
-      const size = payload.replace("MOTOR_CHOOSE_", "").replace(/_/g, "/").replace(/~/g, "-");
+      const size = payload
+        .replace("MOTOR_CHOOSE_", "")
+        .replace(/_/g, "/")
+        .replace(/~/g, "-");
       session.banUkuran = size;
       session.state = "show_products";
       await this.showBanProducts(senderId, session);
@@ -872,13 +1137,26 @@ class MessageHandler {
       session.currentPage = 1;
       session.totalPages = 1;
       session.allProducts = [];
-      await this.sendWelcomeMessage(senderId);
+      await this.sendTextMessage(
+        senderId,
+        "Oke juragan, mau cari ban apa lagi?",
+      );
       return;
     }
 
     if (payload === "SELESAI") {
       await this.sendFinishMessage(senderId);
       this.userSessions.delete(senderId);
+      return;
+    }
+
+    // ---------- USER WANTS A DIFFERENT MERK ----------
+    if (payload === "OTHER_MERK") {
+      session.state = "waiting_brand_name";
+      await this.sendTextMessage(
+        senderId,
+        "Oke juragan, merk apa yang juragan mau? Ketik nama merk-nya ya (contoh: Michelin, Pirelli)",
+      );
       return;
     }
 
@@ -901,7 +1179,10 @@ class MessageHandler {
     // ---------- TIPE MOTOR ----------
     if (payload === "INPUT_TIPE_MOTOR") {
       session.state = "waiting_motor_type";
-      await this.sendTextMessage(senderId, "Boleh tau tipe motornya apa, juragan? Contoh: Yamaha Mio, Honda Beat");
+      await this.sendTextMessage(
+        senderId,
+        "Boleh tau tipe motornya apa, juragan? Contoh: Yamaha Mio, Honda Beat",
+      );
       return;
     }
 
@@ -927,31 +1208,41 @@ class MessageHandler {
     if (payload.startsWith("CEK_HARGA_")) {
       try {
         const base64Data = payload.replace("CEK_HARGA_", "");
-        const productData = JSON.parse(Buffer.from(base64Data, 'base64').toString('utf8'));
-        
+        const productData = JSON.parse(
+          Buffer.from(base64Data, "base64").toString("utf8"),
+        );
+
         let priceText = `💰 **${productData.name}**\n`;
         if (productData.brand) priceText += `🏷️ Merk: ${productData.brand}\n`;
-        if (productData.spec) priceText += `📋 Spesifikasi: ${productData.spec}\n`;
-        
+        if (productData.spec)
+          priceText += `📋 Spesifikasi: ${productData.spec}\n`;
+
         if (productData.harga_pasang) {
           const hargaPasangDisplay = productData.harga_pasang * 1000;
-          priceText += `\n🔧 **Harga Pasang: Rp ${hargaPasangDisplay.toLocaleString('id-ID')}**\n`;
+          priceText += `\n🔧 **Harga Pasang: Rp ${hargaPasangDisplay.toLocaleString("id-ID")}**\n`;
           priceText += `\n🛒 Untuk pembelian, klik link:\n📞 ${this.getWhatsAppLink()}\n`;
         } else {
           priceText += `\n💬 Untuk info harga terbaru, klik link:\n📞 ${this.getWhatsAppLink()}\n`;
         }
-        
+
         await this.sendTextMessage(senderId, priceText, [
-          { content_type: "text", title: "🔍 Liat-liat Lagi", payload: "LIAT_LAGI" },
+          {
+            content_type: "text",
+            title: "🔍 Liat-liat Lagi",
+            payload: "LIAT_LAGI",
+          },
           { content_type: "text", title: "✅ Selesai", payload: "SELESAI" },
         ]);
-        
+
         session.state = "after_price_check";
       } catch (error) {
         console.error("Error handling CEK_HARGA:", error);
         // Reset session on error
         session.state = null;
-        await this.sendTextMessage(senderId, `Maaf, ada error saat mengecek harga 😔\n\nUntuk info harga, klik link:\n📞 ${this.getWhatsAppLink()}`);
+        await this.sendTextMessage(
+          senderId,
+          `Maaf, ada error saat mengecek harga 😔\n\nUntuk info harga, klik link:\n📞 ${this.getWhatsAppLink()}`,
+        );
       }
       return;
     }
@@ -970,14 +1261,15 @@ class MessageHandler {
     const fresh = () => ({
       state: null,
       lastActivity: now,
-      banSize: null,        // e.g., "80/90"
-      banRing: null,        // e.g., "14"
-      banUkuran: null,      // complete e.g., "80/90-14"
-      motorType: null,      // e.g., "Yamaha Mio"
-      motorPosition: null,  // "depan" or "belakang"
-      currentPage: 1,       // for pagination
-      totalPages: 1,        // total pages for pagination
-      allProducts: [],      // all matched products for pagination
+      isNew: true,
+      banSize: null, // e.g., "80/90"
+      banRing: null, // e.g., "14"
+      banUkuran: null, // complete e.g., "80/90-14"
+      motorType: null, // e.g., "Yamaha Mio"
+      motorPosition: null, // "depan" or "belakang"
+      currentPage: 1, // for pagination
+      totalPages: 1, // total pages for pagination
+      allProducts: [], // all matched products for pagination
     });
 
     if (!this.userSessions.has(senderId)) {
@@ -993,6 +1285,7 @@ class MessageHandler {
     }
 
     s.lastActivity = now;
+    s.isNew = false;
     return s;
   }
 
@@ -1021,7 +1314,10 @@ class MessageHandler {
 
   normalizeBanSize(s) {
     // Normalize to format: 80/90-14
-    return String(s).trim().replace(/\s+/g, "").replace(/[\/\-]/g, (m) => m === "/" ? "/" : "-");
+    return String(s)
+      .trim()
+      .replace(/\s+/g, "")
+      .replace(/[\/\-]/g, (m) => (m === "/" ? "/" : "-"));
   }
 
   extractRingSize(s) {
@@ -1058,7 +1354,7 @@ class MessageHandler {
   // =========================
   async sendWelcomeMessage(senderId) {
     const welcomeText = `Hallo juragan, dengan Bella Gudang Ban. Cari ban apa?`;
-    
+
     await this.sendTextMessage(senderId, welcomeText);
   }
 
@@ -1070,7 +1366,7 @@ Untuk order atau info lebih lanjut, klik link:
 📍 **Alamat:** https://maps.app.goo.gl/DCjy76XTXcPyKWdH9
 
 Sampai jumpa lagi, juragan! 👋`;
-    
+
     await this.sendTextMessage(senderId, finishText);
   }
 
@@ -1079,19 +1375,24 @@ Sampai jumpa lagi, juragan! 👋`;
   // =========================
   async askForRingSize(senderId, session) {
     const banSize = session.banSize;
-    
+
     try {
       // Get GPT recommendations for common ring sizes
-      const gptRecommendedRings = await gptService.getRecommendedRingSizes(banSize);
-      
+      const gptRecommendedRings =
+        await gptService.getRecommendedRingSizes(banSize);
+
       // Also get available ring sizes from sheets for this ban size
       const allBanProducts = await sheetsService.getProductsByCategory("ban");
       const availableRings = new Set();
-      
-      allBanProducts.forEach(product => {
-        const spec = String(product.specifications || product.SPESIFIKASI || "");
+
+      allBanProducts.forEach((product) => {
+        const spec = String(
+          product.specifications || product.SPESIFIKASI || "",
+        );
         if (spec.includes(banSize)) {
-          const match = spec.match(new RegExp(`${banSize.replace(/\//g, "\\/")}-(\\d{2})`));
+          const match = spec.match(
+            new RegExp(`${banSize.replace(/\//g, "\\/")}-(\\d{2})`),
+          );
           if (match) {
             availableRings.add(match[1]);
           }
@@ -1099,45 +1400,53 @@ Sampai jumpa lagi, juragan! 👋`;
       });
 
       const availableRingsArray = Array.from(availableRings).sort();
-      
+
       // Combine GPT recommendations with actual stock
       // Prioritize rings that are both recommended AND in stock
-      const priorityRings = gptRecommendedRings.filter(r => availableRingsArray.includes(r));
-      const otherRings = availableRingsArray.filter(r => !priorityRings.includes(r));
-      
+      const priorityRings = gptRecommendedRings.filter((r) =>
+        availableRingsArray.includes(r),
+      );
+      const otherRings = availableRingsArray.filter(
+        (r) => !priorityRings.includes(r),
+      );
+
       // Combine: priority first, then others (max 6 total for quick replies)
       const displayRings = [...priorityRings, ...otherRings].slice(0, 6);
-      
+
       if (displayRings.length === 0) {
         // No ring sizes found - suggest using motor type instead
         await this.sendTextMessage(
-          senderId, 
-          `Maaf, Bella tidak menemukan ring untuk ban ${banSize} 😔\n\nCoba kasih tau tipe motor aja yuk! Nanti Bella bantu carikan.\n\nContoh: Yamaha Mio, Honda Beat, Suzuki Nex`
+          senderId,
+          `Maaf, Bella tidak menemukan ring untuk ban ${banSize} 😔\n\nCoba kasih tau tipe motor aja yuk! Nanti Bella bantu carikan.\n\nContoh: Yamaha Mio, Honda Beat, Suzuki Nex`,
         );
-        
+
         session.state = null;
         session.banSize = null;
         session.banRing = null;
         session.banUkuran = null;
         return;
       }
-      
+
       // Create simple message with GPT recommendations
-      const gptRingText = gptRecommendedRings.length > 0 
-        ? `\n\nBiasanya untuk ${banSize}: ring ${gptRecommendedRings.join(" atau ")}`
-        : "";
-      
-      const quickReplies = displayRings.map(ring => ({
+      const gptRingText =
+        gptRecommendedRings.length > 0
+          ? `\n\nBiasanya untuk ${banSize}: ring ${gptRecommendedRings.join(" atau ")}`
+          : "";
+
+      const quickReplies = displayRings.map((ring) => ({
         content_type: "text",
         title: `Ring ${ring}`,
-        payload: `RING_${ring}`
+        payload: `RING_${ring}`,
       }));
 
       const text = `Ring berapa juragan?${gptRingText}`;
       await this.sendTextMessage(senderId, text, quickReplies);
     } catch (error) {
       console.error("Error in askForRingSize:", error);
-      await this.sendTextMessage(senderId, "Ring berapa juragan? Contoh: 14, 17");
+      await this.sendTextMessage(
+        senderId,
+        "Ring berapa juragan? Contoh: 14, 17",
+      );
     }
   }
 
@@ -1145,68 +1454,87 @@ Sampai jumpa lagi, juragan! 👋`;
     const ukuran = session.banUkuran;
     const searchQuery = session.banSearchQuery || ukuran; // Support custom search queries
     const brandPattern = session.banBrandPattern; // Brand/pattern filter if set
-    
+
     try {
       await this.sendTypingOn(senderId);
-      
+
       // Reset to page 1 for new searches (not for pagination)
       if (session.state !== "after_products") {
         session.currentPage = 1;
       }
-      
+
       const allBanProducts = await sheetsService.getProductsByCategory("ban");
-      
+
       // Use cached products if paginating, otherwise do fresh search
       let matchedProducts;
-      if (session.state === "after_products" && session.allProducts.length > 0) {
+      if (
+        session.state === "after_products" &&
+        session.allProducts.length > 0
+      ) {
         // Paginating through existing results
         matchedProducts = session.allProducts;
       } else {
         // New search - filter products
-        matchedProducts = allBanProducts.filter(product => {
-        const spec = String(product.specifications || product.SPESIFIKASI || "").toLowerCase();
-        const brand = String(product.brand || product.MERK || "").toLowerCase();
-        const pattern = String(product.pattern || product.PATTERN || "").toLowerCase();
-        const name = String(product.name || product.NAMA || "").toLowerCase();
-        
-        const searchLower = String(searchQuery).toLowerCase().replace(/\s+/g, "");
-        
-        // Check if searching by size (contains / or -)
-        const isSizeSearch = searchLower.includes('/') || searchLower.includes('-');
-        
-        // Match by size in spec (exact substring match)
-        const specMatch = spec.replace(/\s+/g, "").includes(searchLower);
-        
-        // Only do brand/pattern/name matching if NOT searching by size
-        let brandMatch = false;
-        let patternMatch = false;
-        let nameMatch = false;
-        
-        if (!isSizeSearch) {
-          // Searching by brand/pattern name
-          brandMatch = brand.includes(searchLower);
-          patternMatch = pattern.includes(searchLower);
-          nameMatch = name.includes(searchLower);
-        }
-        
-        const baseMatch = specMatch || brandMatch || patternMatch || nameMatch;
-        
-        // If brand/pattern filter is active, also check that
-        if (brandPattern) {
-          const brandPatternMatch = brand.includes(brandPattern) || pattern.includes(brandPattern) || name.includes(brandPattern);
-          return baseMatch && brandPatternMatch;
-        }
-        
-        return baseMatch;
+        matchedProducts = allBanProducts.filter((product) => {
+          const spec = String(
+            product.specifications || product.SPESIFIKASI || "",
+          ).toLowerCase();
+          const brand = String(
+            product.brand || product.MERK || "",
+          ).toLowerCase();
+          const pattern = String(
+            product.pattern || product.PATTERN || "",
+          ).toLowerCase();
+          const name = String(product.name || product.NAMA || "").toLowerCase();
+
+          const searchLower = String(searchQuery)
+            .toLowerCase()
+            .replace(/\s+/g, "");
+
+          // Check if searching by size (contains / or -)
+          const isSizeSearch =
+            searchLower.includes("/") || searchLower.includes("-");
+
+          // Match by size in spec (exact substring match)
+          const specMatch = spec.replace(/\s+/g, "").includes(searchLower);
+
+          // Only do brand/pattern/name matching if NOT searching by size
+          let brandMatch = false;
+          let patternMatch = false;
+          let nameMatch = false;
+
+          if (!isSizeSearch) {
+            // Searching by brand/pattern name
+            brandMatch = brand.includes(searchLower);
+            patternMatch = pattern.includes(searchLower);
+            nameMatch = name.includes(searchLower);
+          }
+
+          const baseMatch =
+            specMatch || brandMatch || patternMatch || nameMatch;
+
+          // If brand/pattern filter is active, also check that
+          if (brandPattern) {
+            const brandPatternMatch =
+              brand.includes(brandPattern) ||
+              pattern.includes(brandPattern) ||
+              name.includes(brandPattern);
+            return baseMatch && brandPatternMatch;
+          }
+
+          return baseMatch;
         });
-        
+
         // Store results for pagination
         session.allProducts = matchedProducts;
       }
 
       if (matchedProducts.length === 0) {
-        await this.sendTextMessage(senderId, `Maaf, Bella tidak menemukan ban ${searchQuery} 😔\n\nKetik ulang ukuran ban yang juragan cari atau ketik tipe motor.\n\nContoh: 80/90-14 atau Yamaha Mio`);
-        
+        await this.sendTextMessage(
+          senderId,
+          `Maaf, Bella tidak menemukan ban ${searchQuery} 😔\n\nKetik ulang ukuran ban yang juragan cari atau ketik tipe motor.\n\nContoh: 80/90-14 atau Yamaha Mio`,
+        );
+
         // Reset state so user can type new input
         session.state = null;
         session.banSize = null;
@@ -1217,41 +1545,63 @@ Sampai jumpa lagi, juragan! 👋`;
         return;
       }
 
+      // Reorder matchedProducts to show preferred merks first: MAXXIS, IRC, FDR
+      const preferredOrder = ["maxxis", "irc", "fdr"];
+      matchedProducts.sort((a, b) => {
+        const aBrand = String(a.brand || a.MERK || "").toLowerCase();
+        const bBrand = String(b.brand || b.MERK || "").toLowerCase();
+
+        const aIdx = preferredOrder.findIndex((p) => aBrand.includes(p));
+        const bIdx = preferredOrder.findIndex((p) => bBrand.includes(p));
+
+        if (aIdx === -1 && bIdx === -1) return 0; // neither preferred
+        if (aIdx === -1) return 1; // b preferred
+        if (bIdx === -1) return -1; // a preferred
+        return aIdx - bIdx; // both preferred -> order by preference
+      });
+
       // Facebook Messenger carousel limit is 10 elements
       const MAX_CAROUSEL_ITEMS = 10;
-      
+
       // Calculate pagination
       session.currentPage = session.currentPage || 1;
-      session.totalPages = Math.ceil(matchedProducts.length / MAX_CAROUSEL_ITEMS);
-      
+      session.totalPages = Math.ceil(
+        matchedProducts.length / MAX_CAROUSEL_ITEMS,
+      );
+
       // Get products for current page
       const startIdx = (session.currentPage - 1) * MAX_CAROUSEL_ITEMS;
       const endIdx = startIdx + MAX_CAROUSEL_ITEMS;
       const productsToShow = matchedProducts.slice(startIdx, endIdx);
-      
+
       let text = `📦 Halaman ${session.currentPage}/${session.totalPages}\n`;
       text += `Menampilkan ${productsToShow.length} dari ${matchedProducts.length} ban yang tersedia:\n\n`;
-      
+
       await this.sendTextMessage(senderId, text);
 
       // Send up to 10 products in carousel
       const elements = productsToShow.map((product, idx) => ({
         title: product.name || product.NAMA,
         subtitle: `${product.brand || product.MERK || ""}\n${product.specifications || product.SPESIFIKASI || ""}`,
-        image_url: product.image_url || product.IMAGE_URL || "https://via.placeholder.com/300x300.png?text=Ban",
+        image_url:
+          product.image_url ||
+          product.IMAGE_URL ||
+          "https://via.placeholder.com/300x300.png?text=Ban",
         buttons: [
           {
             type: "postback",
             title: "💰 Cek Harga?",
-            payload: `CEK_HARGA_${Buffer.from(JSON.stringify({
-              name: product.name || product.NAMA,
-              harga_jual: product.harga_jual || product.HARGA_JUAL,
-              harga_pasang: product.harga_pasang || product.HARGA_PASANG,
-              brand: product.brand || product.MERK,
-              spec: product.specifications || product.SPESIFIKASI
-            })).toString('base64')}`
-          }
-        ]
+            payload: `CEK_HARGA_${Buffer.from(
+              JSON.stringify({
+                name: product.name || product.NAMA,
+                harga_jual: product.harga_jual || product.HARGA_JUAL,
+                harga_pasang: product.harga_pasang || product.HARGA_PASANG,
+                brand: product.brand || product.MERK,
+                spec: product.specifications || product.SPESIFIKASI,
+              }),
+            ).toString("base64")}`,
+          },
+        ],
       }));
 
       await this.sendCarousel(senderId, elements);
@@ -1259,54 +1609,118 @@ Sampai jumpa lagi, juragan! 👋`;
       // Send purchase info
       await this.sendTextMessage(
         senderId,
-        `🛒 Untuk pembelian, klik link di bawah:\n📞 WhatsApp: ${this.getWhatsAppLink()}`
+        `🛒 Untuk pembelian, klik link di bawah:\n📞 WhatsApp: ${this.getWhatsAppLink()}`,
       );
 
       // Ask what's next
       if (session.motorType) {
         // User came from motor flow
         const quickReplies = [];
-        
+
         // Add pagination buttons if needed
         if (session.currentPage > 1) {
-          quickReplies.push({ content_type: "text", title: "◀️ Sebelumnya", payload: "PREV_PAGE" });
+          quickReplies.push({
+            content_type: "text",
+            title: "◀️ Sebelumnya",
+            payload: "PREV_PAGE",
+          });
         }
         if (session.currentPage < session.totalPages) {
-          quickReplies.push({ content_type: "text", title: "▶️ Selanjutnya", payload: "NEXT_PAGE" });
+          quickReplies.push({
+            content_type: "text",
+            title: "▶️ Selanjutnya",
+            payload: "NEXT_PAGE",
+          });
         }
-        
+
         if (session.motorPosition === "depan") {
+          // User just saw front recommendations - offer to see the back for same motor or search another motor
           quickReplies.push(
-            { content_type: "text", title: "🔄 Depan Lagi", payload: "MOTOR_DEPAN_LAGI" },
-            { content_type: "text", title: "🔽 Lihat Belakang", payload: "MOTOR_BELAKANG_NOW" }
+            {
+              content_type: "text",
+              title: "🔽 Lihat Belakang",
+              payload: "MOTOR_BELAKANG_NOW",
+            },
+            {
+              content_type: "text",
+              title: "🔁 Motor lain",
+              payload: "INPUT_TIPE_MOTOR",
+            },
+          );
+          quickReplies.push({
+            content_type: "text",
+            title: "✅ Selesai",
+            payload: "SELESAI",
+          });
+
+          await this.sendTextMessage(
+            senderId,
+            "Udah liat ban depan. Mau cari untuk motor lain, atau mau liat yang belakang untuk motor yang sama?",
+            quickReplies,
           );
         } else {
+          // User just saw rear recommendations - offer to see the front for same motor or search another motor
           quickReplies.push(
-            { content_type: "text", title: "🔼 Lihat Depan", payload: "MOTOR_DEPAN_LAGI" },
-            { content_type: "text", title: "🔄 Belakang Lagi", payload: "MOTOR_BELAKANG_NOW" }
+            {
+              content_type: "text",
+              title: "🔼 Lihat Depan",
+              payload: "MOTOR_DEPAN_LAGI",
+            },
+            {
+              content_type: "text",
+              title: "🔁 Motor lain",
+              payload: "INPUT_TIPE_MOTOR",
+            },
+          );
+          quickReplies.push({
+            content_type: "text",
+            title: "✅ Selesai",
+            payload: "SELESAI",
+          });
+
+          await this.sendTextMessage(
+            senderId,
+            "Udah liat ban belakang. Mau liat depannya, atau cari untuk motor lain?",
+            quickReplies,
           );
         }
-        quickReplies.push({ content_type: "text", title: "✅ Selesai", payload: "SELESAI" });
-
-        await this.sendTextMessage(senderId, "Mau lihat lagi atau sudah selesai?", quickReplies);
       } else {
         // Direct size input flow
         const quickReplies = [];
-        
+
         // Add pagination buttons if needed
         if (session.currentPage > 1) {
-          quickReplies.push({ content_type: "text", title: "◀️ Sebelumnya", payload: "PREV_PAGE" });
+          quickReplies.push({
+            content_type: "text",
+            title: "◀️ Sebelumnya",
+            payload: "PREV_PAGE",
+          });
         }
         if (session.currentPage < session.totalPages) {
-          quickReplies.push({ content_type: "text", title: "▶️ Selanjutnya", payload: "NEXT_PAGE" });
+          quickReplies.push({
+            content_type: "text",
+            title: "▶️ Selanjutnya",
+            payload: "NEXT_PAGE",
+          });
         }
-        
+
         quickReplies.push(
           { content_type: "text", title: "🔍 Liat Lagi", payload: "LIAT_LAGI" },
-          { content_type: "text", title: "✅ Selesai", payload: "SELESAI" }
+          { content_type: "text", title: "✅ Selesai", payload: "SELESAI" },
         );
 
-        await this.sendTextMessage(senderId, "Mau lihat lagi atau sudah selesai?", quickReplies);
+        // Add option to request a different merk
+        quickReplies.push({
+          content_type: "text",
+          title: "🔁 Merk lain",
+          payload: "OTHER_MERK",
+        });
+
+        await this.sendTextMessage(
+          senderId,
+          "Mau lihat lagi atau sudah selesai?",
+          quickReplies,
+        );
       }
 
       session.state = "after_products";
@@ -1318,9 +1732,9 @@ Sampai jumpa lagi, juragan! 👋`;
       console.error("Session data:", {
         ukuran: session.banUkuran,
         searchQuery: session.banSearchQuery,
-        brandPattern: session.banBrandPattern
+        brandPattern: session.banBrandPattern,
       });
-      
+
       // Reset session on error
       session.state = null;
       session.banSize = null;
@@ -1328,7 +1742,10 @@ Sampai jumpa lagi, juragan! 👋`;
       session.banUkuran = null;
       session.banBrandPattern = null;
       session.banSearchQuery = null;
-      await this.sendTextMessage(senderId, "Maaf, ada error saat menampilkan produk 😔\n\nKetik ulang ukuran ban atau tipe motor yang juragan cari.");
+      await this.sendTextMessage(
+        senderId,
+        "Maaf, ada error saat menampilkan produk 😔\n\nKetik ulang ukuran ban atau tipe motor yang juragan cari.",
+      );
     }
   }
 
@@ -1340,7 +1757,10 @@ Sampai jumpa lagi, juragan! 👋`;
       await this.sendTypingOn(senderId);
 
       // Use GPT to get standard + upsize recommendations
-      const result = await gptService.getBanRecommendationsForMotor(motorType, position);
+      const result = await gptService.getBanRecommendationsForMotor(
+        motorType,
+        position,
+      );
 
       // Show both recommendations
       const text = `🏍️ Rekomendasi ban ${position} untuk ${motorType}:\n\n${result.standard.label}: ${result.standard.size}\n${result.upsize.label}: ${result.upsize.size}\n\nPilih ukuran yang juragan mau:`;
@@ -1349,13 +1769,13 @@ Sampai jumpa lagi, juragan! 👋`;
         {
           content_type: "text",
           title: `📏 ${result.standard.size}`,
-          payload: `MOTOR_CHOOSE_${this.encodeUkuranForPayload(result.standard.size)}`
+          payload: `MOTOR_CHOOSE_${this.encodeUkuranForPayload(result.standard.size)}`,
         },
         {
           content_type: "text",
           title: `⬆️ ${result.upsize.size}`,
-          payload: `MOTOR_CHOOSE_${this.encodeUkuranForPayload(result.upsize.size)}`
-        }
+          payload: `MOTOR_CHOOSE_${this.encodeUkuranForPayload(result.upsize.size)}`,
+        },
       ];
 
       session.state = "showing_motor_recommendations";
@@ -1366,7 +1786,10 @@ Sampai jumpa lagi, juragan! 👋`;
       session.state = null;
       session.motorType = null;
       session.motorPosition = null;
-      await this.sendTextMessage(senderId, `Maaf, ada error saat mengecek rekomendasi 😔\n\nBisa ketik ukuran ban langsung? Contoh: 80/90-14`);
+      await this.sendTextMessage(
+        senderId,
+        `Maaf, ada error saat mengecek rekomendasi 😔\n\nBisa ketik ukuran ban langsung? Contoh: 80/90-14`,
+      );
     }
   }
 
@@ -1374,9 +1797,7 @@ Sampai jumpa lagi, juragan! 👋`;
     await this.sendTextMessage(
       senderId,
       `Terima kasih! Untuk order, klik link WhatsApp di bawah 😊\n\n📞 ${this.getWhatsAppLink()}`,
-      [
-        { content_type: "text", title: "🔍 Lihat Ban", payload: "LIAT_LAGI" },
-      ]
+      [{ content_type: "text", title: "🔍 Lihat Ban", payload: "LIAT_LAGI" }],
     );
   }
 }
