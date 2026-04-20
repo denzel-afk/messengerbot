@@ -1590,7 +1590,7 @@ Sampai jumpa lagi, juragan! 👋`;
 
       let text = `📦 Halaman ${session.currentPage}/${session.totalPages}\n`;
       if (session.onlyPreferredShown) {
-        text += `Menampilkan ${productsToShow.length} ban dari merk MAXXIS / IRC / FDR yang tersedia:\n\n`;
+        text += `Menampilkan ${productsToShow.length} ban yang tersedia:\n\n`;
       } else {
         text += `Menampilkan ${productsToShow.length} dari ${session.allProducts.length} ban yang tersedia:\n\n`;
       }
