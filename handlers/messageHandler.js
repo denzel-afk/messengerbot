@@ -1526,7 +1526,21 @@ Sampai jumpa lagi, juragan! 👋`;
         });
 
         // Store results for pagination
-        session.allProducts = matchedProducts;
+        // Prefer to show only products from MAXXIS / IRC / FDR if any exist.
+        const preferredOrder = ["maxxis", "irc", "fdr"];
+        const preferredProducts = matchedProducts.filter((p) => {
+          const brand = String(p.brand || p.MERK || "").toLowerCase();
+          return preferredOrder.some((pref) => brand.includes(pref));
+        });
+
+        if (preferredProducts.length > 0) {
+          // show only preferred brands first
+          session.allProducts = preferredProducts;
+          session.onlyPreferredShown = true;
+        } else {
+          session.allProducts = matchedProducts;
+          session.onlyPreferredShown = false;
+        }
       }
 
       if (matchedProducts.length === 0) {
@@ -1575,7 +1589,11 @@ Sampai jumpa lagi, juragan! 👋`;
       const productsToShow = matchedProducts.slice(startIdx, endIdx);
 
       let text = `📦 Halaman ${session.currentPage}/${session.totalPages}\n`;
-      text += `Menampilkan ${productsToShow.length} dari ${matchedProducts.length} ban yang tersedia:\n\n`;
+      if (session.onlyPreferredShown) {
+        text += `Menampilkan ${productsToShow.length} ban dari merk MAXXIS / IRC / FDR yang tersedia:\n\n`;
+      } else {
+        text += `Menampilkan ${productsToShow.length} dari ${session.allProducts.length} ban yang tersedia:\n\n`;
+      }
 
       await this.sendTextMessage(senderId, text);
 
@@ -1716,6 +1734,14 @@ Sampai jumpa lagi, juragan! 👋`;
           payload: "OTHER_MERK",
         });
 
+        // If we showed only preferred brands, prompt that user can type another merk
+        if (session.onlyPreferredShown) {
+          await this.sendTextMessage(
+            senderId,
+            "Tampilkan merk lain? Juragan boleh ketik nama merk yang diinginkan, atau pilih 'Liat Lagi' untuk cari sesuatu yang lain.",
+          );
+        }
+
         await this.sendTextMessage(
           senderId,
           "Mau lihat lagi atau sudah selesai?",
@@ -1762,19 +1788,24 @@ Sampai jumpa lagi, juragan! 👋`;
         position,
       );
 
-      // Show both recommendations
-      const text = `🏍️ Rekomendasi ban ${position} untuk ${motorType}:\n\n${result.standard.label}: ${result.standard.size}\n${result.upsize.label}: ${result.upsize.size}\n\nPilih ukuran yang juragan mau:`;
+      // Show only the standard recommendation (no upsize) and ask for confirmation
+      const standardSize = result?.standard?.size || null;
+      if (!standardSize) {
+        throw new Error("No standard motor recommendation returned");
+      }
+
+      const text = `🏍️ Rekomendasi ban ${position} untuk ${motorType}:\n\nUkuran standar: ${standardSize}\n\nApakah ini ukuran yang juragan mau atau juragan ada ukuran lain?`;
 
       const quickReplies = [
         {
           content_type: "text",
-          title: `📏 ${result.standard.size}`,
-          payload: `MOTOR_CHOOSE_${this.encodeUkuranForPayload(result.standard.size)}`,
+          title: `📏 ${standardSize}`,
+          payload: `MOTOR_CHOOSE_${this.encodeUkuranForPayload(standardSize)}`,
         },
         {
           content_type: "text",
-          title: `⬆️ ${result.upsize.size}`,
-          payload: `MOTOR_CHOOSE_${this.encodeUkuranForPayload(result.upsize.size)}`,
+          title: "Ada ukuran lain",
+          payload: "OTHER_SIZE",
         },
       ];
 
