@@ -300,20 +300,36 @@ class MessageHandler {
         const recommendedSizes =
           await gptService.getCompleteBanSizeFromWidth(extractedWidth);
 
-        if (recommendedSizes.length > 0) {
-          session.banSize = recommendedSizes[0];
-          session.state = "waiting_ring";
-          await askForRingSize(senderId, session);
-          return;
-        } else {
-          await this.sendTextMessage(
-            senderId,
-            `Maaf, Bella tidak menemukan ukuran ban untuk lebar ${extractedWidth} 😔\n\nBoleh coba ketik ukuran lengkap atau tipe motor?\n\nContoh:\n• 80/90-14\n• Yamaha Mio\n• Honda Beat`,
-          );
-          return;
-        }
+        // Ask user to confirm the outer size (width/aspect) — don't speculate
+        const quickReplies = recommendedSizes.slice(0, 3).map((size) => ({
+          content_type: "text",
+          title: size,
+          payload: `SIZE_${size}`,
+        }));
+        quickReplies.push({
+          content_type: "text",
+          title: "Ukuran lain",
+          payload: "OTHER_SIZE",
+        });
+
+        const hint =
+          recommendedSizes.length > 0
+            ? `\n\nBiasanya untuk lebar ${extractedWidth}: ${recommendedSizes.join(", ")}`
+            : "";
+
+        await this.sendTextMessage(
+          senderId,
+          `Ban lebar ${extractedWidth} ya juragan! Outer size-nya berapa?${hint}`,
+          quickReplies,
+        );
+        return;
       } catch (error) {
         console.error("Error getting complete ban size:", error);
+        await this.sendTextMessage(
+          senderId,
+          `Ban lebar ${extractedWidth} ya juragan! Boleh ketik ukuran lengkap?\n\nContoh: ${extractedWidth}/90-14`,
+        );
+        return;
       }
     }
 
