@@ -88,23 +88,88 @@ async function askForTubelessType(senderId, session) {
   );
 }
 
-// Gate every fresh ukuran with the tubeless question; reuse the answer if the
-// ukuran hasn't changed since it was last asked (e.g. switching brand/page).
+function matchBanProducts(allBanProducts, session) {
+  const searchQuery = session.banSearchQuery || session.banUkuran;
+  const brandPattern = session.banBrandPattern;
+
+  return allBanProducts.filter((product) => {
+    const spec = String(
+      product.specifications || product.SPESIFIKASI || "",
+    ).toLowerCase();
+    const brand = String(product.brand || product.MERK || "").toLowerCase();
+    const pattern = String(
+      product.pattern || product.PATTERN || "",
+    ).toLowerCase();
+    const name = String(product.name || product.NAMA || "").toLowerCase();
+
+    const searchLower = String(searchQuery).toLowerCase().replace(/\s+/g, "");
+    const isSizeSearch = searchLower.includes("/") || searchLower.includes("-");
+    const specMatch = spec.replace(/\s+/g, "").includes(searchLower);
+
+    let brandMatch = false;
+    let patternMatch = false;
+    let nameMatch = false;
+
+    if (!isSizeSearch) {
+      brandMatch = brand.includes(searchLower);
+      patternMatch = pattern.includes(searchLower);
+      nameMatch = name.includes(searchLower);
+    }
+
+    const baseMatch = specMatch || brandMatch || patternMatch || nameMatch;
+
+    if (brandPattern) {
+      const brandPatternMatch =
+        brand.includes(brandPattern) ||
+        pattern.includes(brandPattern) ||
+        name.includes(brandPattern);
+      return baseMatch && brandPatternMatch;
+    }
+
+    return baseMatch;
+  });
+}
+
+// Gate every fresh ukuran with the tubeless question, but only when that
+// ukuran actually stocks both kinds — otherwise there's no real choice to
+// make, so skip straight to the products. Reuse the answer if the ukuran
+// hasn't changed since it was last asked (e.g. switching brand/page).
 async function handleUkuranReady(senderId, session) {
   if (session.banTubeless && session.banTubelessForUkuran === session.banUkuran) {
     session.state = "show_products";
     await showBanProducts(senderId, session);
     return;
   }
+
   session.banTubeless = null;
-  session.state = "waiting_tubeless";
-  await askForTubelessType(senderId, session);
+
+  try {
+    const allBanProducts = await sheetsService.getProductsByCategory("ban");
+    const matched = matchBanProducts(allBanProducts, session);
+    const hasTubeless = matched.some((p) =>
+      matchesTubelessType(p.type_ban, "tubeless"),
+    );
+    const hasNonTubeless = matched.some((p) =>
+      matchesTubelessType(p.type_ban, "non_tubeless"),
+    );
+
+    if (hasTubeless && hasNonTubeless) {
+      session.state = "waiting_tubeless";
+      await askForTubelessType(senderId, session);
+      return;
+    }
+  } catch (error) {
+    console.error("Error checking tubeless availability:", error);
+  }
+
+  session.banTubelessForUkuran = session.banUkuran;
+  session.state = "show_products";
+  await showBanProducts(senderId, session);
 }
 
 async function showBanProducts(senderId, session) {
   const ukuran = session.banUkuran;
   const searchQuery = session.banSearchQuery || ukuran;
-  const brandPattern = session.banBrandPattern;
 
   try {
     await facebookAPI.sendTypingOn(senderId);
@@ -119,45 +184,7 @@ async function showBanProducts(senderId, session) {
     if (session.state === "after_products" && session.allProducts.length > 0) {
       matchedProducts = session.allProducts;
     } else {
-      matchedProducts = allBanProducts.filter((product) => {
-        const spec = String(
-          product.specifications || product.SPESIFIKASI || "",
-        ).toLowerCase();
-        const brand = String(product.brand || product.MERK || "").toLowerCase();
-        const pattern = String(
-          product.pattern || product.PATTERN || "",
-        ).toLowerCase();
-        const name = String(product.name || product.NAMA || "").toLowerCase();
-
-        const searchLower = String(searchQuery)
-          .toLowerCase()
-          .replace(/\s+/g, "");
-        const isSizeSearch =
-          searchLower.includes("/") || searchLower.includes("-");
-        const specMatch = spec.replace(/\s+/g, "").includes(searchLower);
-
-        let brandMatch = false;
-        let patternMatch = false;
-        let nameMatch = false;
-
-        if (!isSizeSearch) {
-          brandMatch = brand.includes(searchLower);
-          patternMatch = pattern.includes(searchLower);
-          nameMatch = name.includes(searchLower);
-        }
-
-        const baseMatch = specMatch || brandMatch || patternMatch || nameMatch;
-
-        if (brandPattern) {
-          const brandPatternMatch =
-            brand.includes(brandPattern) ||
-            pattern.includes(brandPattern) ||
-            name.includes(brandPattern);
-          return baseMatch && brandPatternMatch;
-        }
-
-        return baseMatch;
-      });
+      matchedProducts = matchBanProducts(allBanProducts, session);
 
       session.tubelessFallbackNotice = false;
       if (session.banTubeless) {
@@ -267,7 +294,7 @@ async function showBanProducts(senderId, session) {
 
     await facebookAPI.sendTextMessage(
       senderId,
-      `🛒 Untuk pembelian, klik link di bawah:\n📞 WhatsApp: ${getWhatsAppLink()}`,
+      `🛒 Untuk ketersediaan barang klik link di bawah ini:\n📞 WhatsApp: ${getWhatsAppLink()}\n\nLangsung gas aja ${addressName(session)} ke 88Motor, klik link untuk share lokasi:\n📍 https://maps.app.goo.gl/tKmS8ZuXCbhLvcZN6?g_st=ac`,
     );
 
     if (session.motorType) {
@@ -294,16 +321,11 @@ async function showBanProducts(senderId, session) {
             title: "🔽 Lihat Belakang",
             payload: "MOTOR_BELAKANG_NOW",
           },
-          {
-            content_type: "text",
-            title: "🔁 Motor lain",
-            payload: "INPUT_TIPE_MOTOR",
-          },
           { content_type: "text", title: "✅ Selesai", payload: "SELESAI" },
         );
         await facebookAPI.sendTextMessage(
           senderId,
-          "Udah liat ban depan. Mau cari untuk motor lain, atau mau liat yang belakang untuk motor yang sama atau masih mau lihat2 ban depan (bisa klik selanjutnya)?",
+          "Udah liat ban depan. Mau liat yang belakang untuk motor yang sama atau masih mau lihat2 ban depan (bisa klik selanjutnya)?",
           quickReplies,
         );
       } else {
@@ -313,16 +335,11 @@ async function showBanProducts(senderId, session) {
             title: "🔼 Lihat Depan",
             payload: "MOTOR_DEPAN_LAGI",
           },
-          {
-            content_type: "text",
-            title: "🔁 Motor lain",
-            payload: "INPUT_TIPE_MOTOR",
-          },
           { content_type: "text", title: "✅ Selesai", payload: "SELESAI" },
         );
         await facebookAPI.sendTextMessage(
           senderId,
-          "Udah liat ban belakang. Mau liat depannya, atau cari untuk motor lain atau cari merk lain (klik selanjutnya)?",
+          "Udah liat ban belakang. Mau liat depannya atau cari merk lain (klik selanjutnya)?",
           quickReplies,
         );
       }
