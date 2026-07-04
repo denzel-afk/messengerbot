@@ -480,6 +480,46 @@ Jawab HANYA dengan angka 2 digit. Jika tidak ada, jawab: NONE`
 }
 
 // =========================
+// EXTRACT NAME FROM TEXT
+// =========================
+async function extractNameFromText(text) {
+  try {
+    const response = await openai.chat.completions.create({
+      model: "gpt-4o-mini",
+      messages: [
+        {
+          role: "system",
+          content: `Ekstrak nama panggilan orang dari kalimat perkenalan diri (Bahasa Indonesia santai/gaul atau campuran).
+
+Contoh:
+- "nama gw denzel" -> Denzel
+- "Dia budi" -> Budi
+- "saya Budi Santoso" -> Budi Santoso
+- "panggil aja rian" -> Rian
+- "Sari" -> Sari
+- "gapapa" -> NONE (bukan nama)
+
+Jawab HANYA dengan nama orangnya, huruf awal kapital, tanpa kata lain. Jika tidak ada nama yang bisa dikenali, jawab: NONE`,
+        },
+        { role: "user", content: text },
+      ],
+      max_tokens: 20,
+      temperature: 0.1,
+    });
+
+    const result = response.choices[0].message.content.trim();
+    if (!result || result.toUpperCase() === "NONE" || result.length > 40) {
+      return null;
+    }
+
+    return result;
+  } catch (error) {
+    console.error("Error extracting name:", error?.message || error);
+    return null;
+  }
+}
+
+// =========================
 // CHECK IF TEXT IS BAN-RELATED
 // =========================
 async function isBanRelated(text) {
@@ -727,6 +767,7 @@ module.exports = {
   extractWidthFromText,
   extractBanSizeFromText,
   extractRingSizeFromText,
+  extractNameFromText,
   isBanRelated,
   isGreeting,
   isMotorcycleRelated,

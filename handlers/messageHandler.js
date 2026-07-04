@@ -125,7 +125,13 @@ class MessageHandler {
 
     // Capture the user's name from their reply to the greeting
     if (session && session.state === "awaiting_name") {
-      session.userName = extractUserName(rawText) || null;
+      let name = null;
+      try {
+        name = await gptService.extractNameFromText(rawText);
+      } catch (error) {
+        console.error("Error in GPT name extraction:", error);
+      }
+      session.userName = name || extractUserName(rawText) || null;
       session.state = null;
       await this.sendTextMessage(
         senderId,
