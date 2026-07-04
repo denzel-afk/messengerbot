@@ -1,7 +1,12 @@
 const sheetsService = require("../services/sheetsService");
 const facebookAPI = require("../services/facebookAPI");
 const gptService = require("../services/gptService");
-const { askForRingSize, showBanProducts } = require("./banFlow");
+const {
+  askForRingSize,
+  showBanProducts,
+  askForTubelessType,
+  handleUkuranReady,
+} = require("./banFlow");
 const { showMotorRecommendations } = require("./motorFlow");
 const {
   looksLikeCompleteBanSize,
@@ -10,6 +15,11 @@ const {
   normalizeBanSize,
   extractRingSize,
 } = require("../utils/banSizeParser");
+const {
+  addressName,
+  extractUserName,
+  normalizeTubelessAnswer,
+} = require("../utils/helpers");
 
 class MessageHandler {
   constructor() {
@@ -106,12 +116,29 @@ class MessageHandler {
     const rawText = String(text || "");
     const textLower = rawText.toLowerCase().trim();
 
+    // First message in a new session — ask for the user's name
+    if (session && session.isNew) {
+      session.isNew = false;
+      await this.sendWelcomeMessage(senderId, session);
+      return;
+    }
+
+    // Capture the user's name from their reply to the greeting
+    if (session && session.state === "awaiting_name") {
+      session.userName = extractUserName(rawText) || null;
+      session.state = null;
+      await this.sendTextMessage(
+        senderId,
+        `Halo ${addressName(session)}, ada yg bisa Bella bantu?`,
+      );
+      return;
+    }
+
     // If user was asked to provide manual size, process it here
     if (session && session.state === "awaiting_manual_size") {
       if (looksLikeCompleteBanSize(rawText)) {
         session.banUkuran = normalizeBanSize(rawText);
-        session.state = "show_products";
-        await showBanProducts(senderId, session);
+        await handleUkuranReady(senderId, session);
         return;
       }
 
@@ -125,8 +152,7 @@ class MessageHandler {
           return;
         } else {
           session.banUkuran = `${size}-${ring}`;
-          session.state = "show_products";
-          await showBanProducts(senderId, session);
+          await handleUkuranReady(senderId, session);
           return;
         }
       }
@@ -138,24 +164,13 @@ class MessageHandler {
       return;
     }
 
-    // First message in a new session — send welcome
-    if (session && session.isNew) {
-      await this.sendTextMessage(
-        senderId,
-        "Hallo juragan, dengan Bella Gudang Ban. Cari ban apa?",
-      );
-      session.isNew = false;
-      return;
-    }
-
     // ========== STATE: WAITING FOR BRAND NAME ==========
     if (session && session.state === "waiting_brand_name") {
       const brand = rawText.toLowerCase().trim();
       session.banBrandPattern = brand;
 
       if (session.banUkuran || session.banSize) {
-        session.state = "show_products";
-        await showBanProducts(senderId, session);
+        await handleUkuranReady(senderId, session);
         return;
       }
 
@@ -163,7 +178,7 @@ class MessageHandler {
       const displayName = brand.charAt(0).toUpperCase() + brand.slice(1);
       await this.sendTextMessage(
         senderId,
-        `Ah mau ban ${displayName}, ukuran berapa juragan?\n\nContoh: 80/90-14`,
+        `Ah mau ban ${displayName}, ukuran berapa, ${addressName(session)}?\n\nContoh: 80/90-14`,
       );
       return;
     }
@@ -171,8 +186,7 @@ class MessageHandler {
     // ========== DIRECT BAN SIZE INPUT (COMPLETE) ==========
     if (looksLikeCompleteBanSize(rawText)) {
       session.banUkuran = normalizeBanSize(rawText);
-      session.state = "show_products";
-      await showBanProducts(senderId, session);
+      await handleUkuranReady(senderId, session);
       return;
     }
 
@@ -218,8 +232,7 @@ class MessageHandler {
         return;
       } else {
         session.banUkuran = `${size}-${ring}`;
-        session.state = "show_products";
-        await showBanProducts(senderId, session);
+        await handleUkuranReady(senderId, session);
         return;
       }
     }
@@ -245,8 +258,7 @@ class MessageHandler {
         if (extractedSize) {
           if (looksLikeCompleteBanSize(extractedSize)) {
             session.banUkuran = normalizeBanSize(extractedSize);
-            session.state = "show_products";
-            await showBanProducts(senderId, session);
+            await handleUkuranReady(senderId, session);
             return;
           } else if (looksLikeIncompleteBanSize(extractedSize)) {
             const [size, ring] = parseBanSize(extractedSize);
@@ -258,8 +270,7 @@ class MessageHandler {
               return;
             } else {
               session.banUkuran = `${size}-${ring}`;
-              session.state = "show_products";
-              await showBanProducts(senderId, session);
+              await handleUkuranReady(senderId, session);
               return;
             }
           }
@@ -319,7 +330,7 @@ class MessageHandler {
 
         await this.sendTextMessage(
           senderId,
-          `Ban lebar ${extractedWidth} ya juragan! Outer size-nya berapa?${hint}`,
+          `Ban lebar ${extractedWidth} ya, ${addressName(session)}! Outer size-nya berapa?${hint}`,
           quickReplies,
         );
         return;
@@ -327,7 +338,7 @@ class MessageHandler {
         console.error("Error getting complete ban size:", error);
         await this.sendTextMessage(
           senderId,
-          `Ban lebar ${extractedWidth} ya juragan! Boleh ketik ukuran lengkap?\n\nContoh: ${extractedWidth}/90-14`,
+          `Ban lebar ${extractedWidth} ya, ${addressName(session)}! Boleh ketik ukuran lengkap?\n\nContoh: ${extractedWidth}/90-14`,
         );
         return;
       }
@@ -335,7 +346,7 @@ class MessageHandler {
 
     // ========== SELESAI ==========
     if (textLower === "selesai") {
-      await this.sendFinishMessage(senderId);
+      await this.sendFinishMessage(senderId, session);
       this.userSessions.delete(senderId);
       return;
     }
@@ -352,7 +363,7 @@ class MessageHandler {
       session.motorPosition = null;
       await this.sendTextMessage(
         senderId,
-        "Oke juragan, mau cari ban apa lagi?",
+        `Oke ${addressName(session)}, mau cari ban apa lagi?`,
       );
       return;
     }
@@ -388,7 +399,33 @@ class MessageHandler {
       session.motorPosition = null;
       await this.sendTextMessage(
         senderId,
-        "Gak apa-apa juragan! Kalau bingung ukuran ban nya, bisa kasih tau nama motornya aja 😊\n\nContoh:\n• Honda Beat\n• Yamaha Mio\n• Suzuki Nex\n• atau motor lainnya",
+        `Gak apa-apa, ${addressName(session)}! Kalau bingung ukuran ban nya, bisa kasih tau nama motornya aja 😊\n\nContoh:\n• Honda Beat\n• Yamaha Mio\n• Suzuki Nex\n• atau motor lainnya`,
+      );
+      return;
+    }
+
+    // ========== STATE: WAITING FOR TUBELESS PREFERENCE ==========
+    if (session.state === "waiting_tubeless") {
+      const wanted = normalizeTubelessAnswer(rawText);
+      if (wanted) {
+        session.banTubeless = wanted;
+        session.banTubelessForUkuran = session.banUkuran;
+        session.state = "show_products";
+        await showBanProducts(senderId, session);
+        return;
+      }
+
+      await this.sendTextMessage(
+        senderId,
+        `Maaf, ${addressName(session)}, mau yg Tubeless atau tidak tubeless?`,
+        [
+          { content_type: "text", title: "Tubeless", payload: "TUBELESS_YES" },
+          {
+            content_type: "text",
+            title: "Non-Tubeless",
+            payload: "TUBELESS_NO",
+          },
+        ],
       );
       return;
     }
@@ -440,8 +477,7 @@ class MessageHandler {
           if (matchedRing) {
             session.banRing = matchedRing;
             session.banUkuran = `${session.banSize}-${matchedRing}`;
-            session.state = "show_products";
-            await showBanProducts(senderId, session);
+            await handleUkuranReady(senderId, session);
             return;
           } else {
             if (availableRingsArray.length > 0) {
@@ -454,7 +490,7 @@ class MessageHandler {
             } else {
               await this.sendTextMessage(
                 senderId,
-                `Maaf, tidak ada ring yang tersedia untuk ban ${session.banSize} 😔\n\nKetik ulang ukuran ban atau tipe motor yang juragan cari.`,
+                `Maaf, tidak ada ring yang tersedia untuk ban ${session.banSize} 😔\n\nKetik ulang ukuran ban atau tipe motor yang ${addressName(session)} cari.`,
               );
               session.state = null;
               session.banSize = null;
@@ -535,8 +571,7 @@ class MessageHandler {
       if (looksLikeCompleteBanSize(rawText)) {
         session.banUkuran = normalizeBanSize(rawText);
         session.banSearchQuery = session.banBrandPattern;
-        session.state = "show_products";
-        await showBanProducts(senderId, session);
+        await handleUkuranReady(senderId, session);
         return;
       } else if (looksLikeIncompleteBanSize(rawText)) {
         const [size, ring] = parseBanSize(rawText);
@@ -550,8 +585,7 @@ class MessageHandler {
         } else {
           session.banUkuran = `${size}-${ring}`;
           session.banSearchQuery = session.banBrandPattern;
-          session.state = "show_products";
-          await showBanProducts(senderId, session);
+          await handleUkuranReady(senderId, session);
           return;
         }
       } else {
@@ -566,8 +600,7 @@ class MessageHandler {
             if (looksLikeCompleteBanSize(extractedSize)) {
               session.banUkuran = normalizeBanSize(extractedSize);
               session.banSearchQuery = session.banBrandPattern;
-              session.state = "show_products";
-              await showBanProducts(senderId, session);
+              await handleUkuranReady(senderId, session);
               return;
             } else if (looksLikeIncompleteBanSize(extractedSize)) {
               const [size, ring] = parseBanSize(extractedSize);
@@ -580,8 +613,7 @@ class MessageHandler {
               } else {
                 session.banUkuran = `${size}-${ring}`;
                 session.banSearchQuery = session.banBrandPattern;
-                session.state = "show_products";
-                await showBanProducts(senderId, session);
+                await handleUkuranReady(senderId, session);
                 return;
               }
             }
@@ -677,7 +709,7 @@ class MessageHandler {
       } else {
         await this.sendTextMessage(
           senderId,
-          "Pilih 'depan' atau 'belakang' ya juragan",
+          `Pilih 'depan' atau 'belakang' ya, ${addressName(session)}`,
           [
             { content_type: "text", title: "Depan", payload: "MOTOR_DEPAN" },
             {
@@ -693,10 +725,17 @@ class MessageHandler {
 
     // ========== STATE: USER CHOOSES SIZE AFTER MOTOR RECOMMENDATION ==========
     if (session.state === "showing_motor_recommendations") {
+      const affirmativePattern =
+        /^(y|ya|yes|iya|iy|yoi|yup|ok|oke|okay|betul|benar|sip|siap|mantap|setuju|itu)\b/i;
+      if (affirmativePattern.test(textLower) && session.recommendedStandardSize) {
+        session.banUkuran = session.recommendedStandardSize;
+        await handleUkuranReady(senderId, session);
+        return;
+      }
+
       if (looksLikeCompleteBanSize(rawText)) {
         session.banUkuran = normalizeBanSize(rawText);
-        session.state = "show_products";
-        await showBanProducts(senderId, session);
+        await handleUkuranReady(senderId, session);
         return;
       } else if (looksLikeIncompleteBanSize(rawText)) {
         const [size, ring] = parseBanSize(rawText);
@@ -708,8 +747,7 @@ class MessageHandler {
           return;
         } else {
           session.banUkuran = `${size}-${ring}`;
-          session.state = "show_products";
-          await showBanProducts(senderId, session);
+          await handleUkuranReady(senderId, session);
           return;
         }
       } else {
@@ -723,8 +761,7 @@ class MessageHandler {
 
             if (looksLikeCompleteBanSize(extractedSize)) {
               session.banUkuran = normalizeBanSize(extractedSize);
-              session.state = "show_products";
-              await showBanProducts(senderId, session);
+              await handleUkuranReady(senderId, session);
               return;
             } else if (looksLikeIncompleteBanSize(extractedSize)) {
               const [size, ring] = parseBanSize(extractedSize);
@@ -736,8 +773,7 @@ class MessageHandler {
                 return;
               } else {
                 session.banUkuran = `${size}-${ring}`;
-                session.state = "show_products";
-                await showBanProducts(senderId, session);
+                await handleUkuranReady(senderId, session);
                 return;
               }
             }
@@ -751,7 +787,7 @@ class MessageHandler {
 
         await this.sendTextMessage(
           senderId,
-          "Bella kurang paham, bisa ketik ukuran ban yang juragan mau? Contoh: 80/90-14 atau pilih dari rekomendasi di atas",
+          `Bella kurang paham, bisa ketik ukuran ban yang ${addressName(session)} mau? Contoh: 80/90-14 atau pilih dari rekomendasi di atas`,
         );
         return;
       }
@@ -761,11 +797,11 @@ class MessageHandler {
     if (session.state === "after_products") {
       if (["liat lagi", "lihat lagi", "cari lagi"].includes(textLower)) {
         session.state = null;
-        await this.sendWelcomeMessage(senderId);
+        await this.sendWelcomeMessage(senderId, session);
         return;
       }
       if (textLower === "selesai") {
-        await this.sendFinishMessage(senderId);
+        await this.sendFinishMessage(senderId, session);
         this.userSessions.delete(senderId);
         return;
       }
@@ -790,8 +826,7 @@ class MessageHandler {
               session.onlyPreferredShown = false;
               session.currentPage = 1;
               session.totalPages = Math.ceil(others.length / 10);
-              session.state = "show_products";
-              await showBanProducts(senderId, session);
+              await handleUkuranReady(senderId, session);
               return;
             }
           } catch (error) {
@@ -801,7 +836,7 @@ class MessageHandler {
           session.state = "waiting_brand_name";
           await this.sendTextMessage(
             senderId,
-            "Oke juragan, merk apa yang juragan mau? Ketik nama merk-nya saja, misal: Michelin, Pirelli",
+            `Oke ${addressName(session)}, merk apa yang ${addressName(session)} mau? Ketik nama merk-nya saja, misal: Michelin, Pirelli`,
           );
           return;
         }
@@ -833,8 +868,7 @@ class MessageHandler {
             session.banBrandPattern = matchedBrand;
 
             if (session.banUkuran || session.banSize) {
-              session.state = "show_products";
-              await showBanProducts(senderId, session);
+              await handleUkuranReady(senderId, session);
               return;
             } else {
               session.state = "waiting_brand_size";
@@ -842,7 +876,7 @@ class MessageHandler {
                 matchedBrand.charAt(0).toUpperCase() + matchedBrand.slice(1);
               await this.sendTextMessage(
                 senderId,
-                `Ah mau ban ${displayName}, ukuran berapa juragan?\n\nContoh: 80/90-14`,
+                `Ah mau ban ${displayName}, ukuran berapa, ${addressName(session)}?\n\nContoh: 80/90-14`,
               );
               return;
             }
@@ -878,11 +912,11 @@ class MessageHandler {
         )
       ) {
         session.state = null;
-        await this.sendWelcomeMessage(senderId);
+        await this.sendWelcomeMessage(senderId, session);
         return;
       }
       if (textLower === "selesai") {
-        await this.sendFinishMessage(senderId);
+        await this.sendFinishMessage(senderId, session);
         this.userSessions.delete(senderId);
         return;
       }
@@ -902,8 +936,7 @@ class MessageHandler {
 
           if (looksLikeCompleteBanSize(extractedSize)) {
             session.banUkuran = normalizeBanSize(extractedSize);
-            session.state = "show_products";
-            await showBanProducts(senderId, session);
+            await handleUkuranReady(senderId, session);
             return;
           } else if (looksLikeIncompleteBanSize(extractedSize)) {
             const [size, ring] = parseBanSize(extractedSize);
@@ -916,8 +949,7 @@ class MessageHandler {
               return;
             } else {
               session.banUkuran = `${size}-${ring}`;
-              session.state = "show_products";
-              await showBanProducts(senderId, session);
+              await handleUkuranReady(senderId, session);
               return;
             }
           }
@@ -949,7 +981,7 @@ class MessageHandler {
         mentioned.charAt(0).toUpperCase() + mentioned.slice(1);
       await this.sendTextMessage(
         senderId,
-        `Ah mau ban ${displayName}, ukuran berapa juragan?\n\nContoh: 80/90-14`,
+        `Ah mau ban ${displayName}, ukuran berapa, ${addressName(session)}?\n\nContoh: 80/90-14`,
       );
       return;
     }
@@ -991,7 +1023,7 @@ class MessageHandler {
             matched.charAt(0).toUpperCase() + matched.slice(1);
           await this.sendTextMessage(
             senderId,
-            `Ah mau ban ${displayName}, ukuran berapa juragan?\n\nContoh: 80/90-14`,
+            `Ah mau ban ${displayName}, ukuran berapa, ${addressName(session)}?\n\nContoh: 80/90-14`,
           );
           return;
         }
@@ -1010,14 +1042,14 @@ class MessageHandler {
     ];
 
     if (greetings.includes(textLower)) {
-      await this.sendWelcomeMessage(senderId);
+      await this.sendWelcomeMessage(senderId, session);
       return;
     }
 
     try {
       const isGreeting = await gptService.isGreeting(rawText);
       if (isGreeting) {
-        await this.sendWelcomeMessage(senderId);
+        await this.sendWelcomeMessage(senderId, session);
         return;
       }
     } catch (error) {
@@ -1061,8 +1093,7 @@ class MessageHandler {
         .replace(/_/g, "/")
         .replace(/~/g, "-");
       session.banUkuran = size;
-      session.state = "show_products";
-      await showBanProducts(senderId, session);
+      await handleUkuranReady(senderId, session);
       return;
     }
 
@@ -1078,7 +1109,7 @@ class MessageHandler {
       session.state = "awaiting_manual_size";
       await this.sendTextMessage(
         senderId,
-        "Oke juragan, ketik ukuran lengkap yang juragan mau (contoh: 80/90-14) atau hanya lebar (contoh: 80)",
+        `Oke ${addressName(session)}, ketik ukuran lengkap yang ${addressName(session)} mau (contoh: 80/90-14) atau hanya lebar (contoh: 80)`,
       );
       return;
     }
@@ -1087,6 +1118,14 @@ class MessageHandler {
       const ring = payload.replace("RING_", "");
       session.banRing = ring;
       session.banUkuran = `${session.banSize}-${ring}`;
+      await handleUkuranReady(senderId, session);
+      return;
+    }
+
+    if (payload === "TUBELESS_YES" || payload === "TUBELESS_NO") {
+      session.banTubeless =
+        payload === "TUBELESS_YES" ? "tubeless" : "non_tubeless";
+      session.banTubelessForUkuran = session.banUkuran;
       session.state = "show_products";
       await showBanProducts(senderId, session);
       return;
@@ -1112,8 +1151,7 @@ class MessageHandler {
         .replace(/_/g, "/")
         .replace(/~/g, "-");
       session.banUkuran = size;
-      session.state = "show_products";
-      await showBanProducts(senderId, session);
+      await handleUkuranReady(senderId, session);
       return;
     }
 
@@ -1140,6 +1178,8 @@ class MessageHandler {
       session.banUkuran = null;
       session.banBrandPattern = null;
       session.banSearchQuery = null;
+      session.banTubeless = null;
+      session.banTubelessForUkuran = null;
       session.motorType = null;
       session.motorPosition = null;
       session.currentPage = 1;
@@ -1147,13 +1187,13 @@ class MessageHandler {
       session.allProducts = [];
       await this.sendTextMessage(
         senderId,
-        "Oke juragan, mau cari ban apa lagi?",
+        `Oke ${addressName(session)}, mau cari ban apa lagi?`,
       );
       return;
     }
 
     if (payload === "SELESAI") {
-      await this.sendFinishMessage(senderId);
+      await this.sendFinishMessage(senderId, session);
       this.userSessions.delete(senderId);
       return;
     }
@@ -1162,7 +1202,7 @@ class MessageHandler {
       session.state = "waiting_brand_name";
       await this.sendTextMessage(
         senderId,
-        "Oke juragan, merk apa yang juragan mau? Ketik nama merk-nya ya (contoh: Michelin, Pirelli)",
+        `Oke ${addressName(session)}, merk apa yang ${addressName(session)} mau? Ketik nama merk-nya ya (contoh: Michelin, Pirelli)`,
       );
       return;
     }
@@ -1185,12 +1225,12 @@ class MessageHandler {
       session.state = "waiting_motor_type";
       await this.sendTextMessage(
         senderId,
-        "Boleh tau tipe motornya apa, juragan? Contoh: Yamaha Mio, Honda Beat",
+        `Boleh tau tipe motornya apa, ${addressName(session)}? Contoh: Yamaha Mio, Honda Beat`,
       );
       return;
     }
 
-    await this.sendWelcomeMessage(senderId);
+    await this.sendWelcomeMessage(senderId, session);
   }
 
   // =========================
@@ -1203,7 +1243,8 @@ class MessageHandler {
     console.log(`🎯 Postback from ${senderId}: ${payload}`);
 
     if (payload === "GET_STARTED") {
-      await this.sendWelcomeMessage(senderId);
+      session.isNew = false;
+      await this.sendWelcomeMessage(senderId, session);
       return;
     }
 
@@ -1262,9 +1303,13 @@ class MessageHandler {
       state: null,
       lastActivity: now,
       isNew: true,
+      userName: null,
       banSize: null,
       banRing: null,
       banUkuran: null,
+      banTubeless: null,
+      banTubelessForUkuran: null,
+      recommendedStandardSize: null,
       motorType: null,
       motorPosition: null,
       currentPage: 1,
@@ -1307,21 +1352,30 @@ class MessageHandler {
   // =========================
   // WELCOME & FINISH
   // =========================
-  async sendWelcomeMessage(senderId) {
+  async sendWelcomeMessage(senderId, session) {
+    if (session && session.userName) {
+      session.state = null;
+      await this.sendTextMessage(
+        senderId,
+        `Halo ${addressName(session)}, ada yg bisa Bella bantu?`,
+      );
+      return;
+    }
+    if (session) session.state = "awaiting_name";
     await this.sendTextMessage(
       senderId,
-      "Hallo juragan, dengan Bella Gudang Ban. Cari ban apa?",
+      "Halo juragan, Selamat datang di Gudang Ban Motor, dengan saya Bella. Boleh tau nama juragan? Supaya Bella enak panggil nya.",
     );
   }
 
-  async sendFinishMessage(senderId) {
-    const finishText = `Terima kasih sudah menggunakan layanan Bella! 😊
+  async sendFinishMessage(senderId, session) {
+    const finishText = `Terima kasih sudah menggunakan layanan Bella, ${addressName(session)}! 😊
 
 Untuk order atau info lebih lanjut, klik link:
 📞 ${this.getWhatsAppLink()}
 📍 **Alamat:** https://maps.app.goo.gl/DCjy76XTXcPyKWdH9
 
-Sampai jumpa lagi, juragan! 👋`;
+Sampai jumpa lagi, ${addressName(session)}! 👋`;
 
     await this.sendTextMessage(senderId, finishText);
   }

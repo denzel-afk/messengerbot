@@ -1,6 +1,7 @@
 const sheetsService = require("../services/sheetsService");
 const facebookAPI = require("../services/facebookAPI");
 const gptService = require("../services/gptService");
+const { addressName, matchesTubelessType } = require("../utils/helpers");
 
 function getWhatsAppLink() {
   const number = process.env.SUPPORT_WHATSAPP || "081273574202";
@@ -63,16 +64,41 @@ async function askForRingSize(senderId, session) {
 
     await facebookAPI.sendTextMessage(
       senderId,
-      `Ring berapa juragan?${gptRingText}`,
+      `Ring berapa, ${addressName(session)}?${gptRingText}`,
       quickReplies,
     );
   } catch (error) {
     console.error("Error in askForRingSize:", error);
     await facebookAPI.sendTextMessage(
       senderId,
-      "Ring berapa juragan? Contoh: 14, 17",
+      `Ring berapa, ${addressName(session)}? Contoh: 14, 17`,
     );
   }
+}
+
+async function askForTubelessType(senderId, session) {
+  const addr = addressName(session);
+  await facebookAPI.sendTextMessage(
+    senderId,
+    `Baik ${addr}, ${addr} mau yg Tubeless atau tidak tubeless?`,
+    [
+      { content_type: "text", title: "Tubeless", payload: "TUBELESS_YES" },
+      { content_type: "text", title: "Non-Tubeless", payload: "TUBELESS_NO" },
+    ],
+  );
+}
+
+// Gate every fresh ukuran with the tubeless question; reuse the answer if the
+// ukuran hasn't changed since it was last asked (e.g. switching brand/page).
+async function handleUkuranReady(senderId, session) {
+  if (session.banTubeless && session.banTubelessForUkuran === session.banUkuran) {
+    session.state = "show_products";
+    await showBanProducts(senderId, session);
+    return;
+  }
+  session.banTubeless = null;
+  session.state = "waiting_tubeless";
+  await askForTubelessType(senderId, session);
 }
 
 async function showBanProducts(senderId, session) {
@@ -133,6 +159,18 @@ async function showBanProducts(senderId, session) {
         return baseMatch;
       });
 
+      session.tubelessFallbackNotice = false;
+      if (session.banTubeless) {
+        const tubelessFiltered = matchedProducts.filter((p) =>
+          matchesTubelessType(p.type_ban, session.banTubeless),
+        );
+        if (tubelessFiltered.length > 0) {
+          matchedProducts = tubelessFiltered;
+        } else if (matchedProducts.length > 0) {
+          session.tubelessFallbackNotice = true;
+        }
+      }
+
       session.fullMatchedProducts = matchedProducts;
 
       const preferredOrder = ["maxxis", "irc", "fdr"];
@@ -153,7 +191,7 @@ async function showBanProducts(senderId, session) {
     if (matchedProducts.length === 0) {
       await facebookAPI.sendTextMessage(
         senderId,
-        `Maaf, Bella tidak menemukan ban ${searchQuery} 😔\n\nKetik ulang ukuran ban yang juragan cari atau ketik tipe motor.\n\nContoh: 80/90-14 atau Yamaha Mio`,
+        `Maaf, Bella tidak menemukan ban ${searchQuery} 😔\n\nKetik ulang ukuran ban yang ${addressName(session)} cari atau ketik tipe motor.\n\nContoh: 80/90-14 atau Yamaha Mio`,
       );
       session.state = null;
       session.banSize = null;
@@ -186,7 +224,13 @@ async function showBanProducts(senderId, session) {
     const endIdx = startIdx + MAX_CAROUSEL_ITEMS;
     const productsToShow = matchedProducts.slice(startIdx, endIdx);
 
-    let text = `📦 Halaman ${session.currentPage}/${session.totalPages}\n`;
+    let text = "";
+    if (session.tubelessFallbackNotice && session.currentPage === 1) {
+      const wanted =
+        session.banTubeless === "tubeless" ? "Tubeless" : "Non-Tubeless";
+      text += `⚠️ Maaf, tidak ada tipe ${wanted} untuk ukuran ini, Bella tampilkan semua tipe yang tersedia:\n\n`;
+    }
+    text += `📦 Halaman ${session.currentPage}/${session.totalPages}\n`;
     if (session.onlyPreferredShown) {
       text += `Menampilkan ${productsToShow.length} ban yang tersedia:\n\n`;
     } else {
@@ -197,7 +241,7 @@ async function showBanProducts(senderId, session) {
 
     const elements = productsToShow.map((product) => ({
       title: product.name || product.NAMA,
-      subtitle: `${product.brand || product.MERK || ""}\n${product.specifications || product.SPESIFIKASI || ""}`,
+      subtitle: `${product.brand || product.MERK || ""}\n${product.specifications || product.SPESIFIKASI || ""}${product.type_ban ? " - " + product.type_ban : ""}`,
       image_url:
         product.image_url ||
         product.IMAGE_URL ||
@@ -311,13 +355,13 @@ async function showBanProducts(senderId, session) {
       if (session.onlyPreferredShown) {
         await facebookAPI.sendTextMessage(
           senderId,
-          "Tampilkan merk lain? Juragan boleh ketik nama merk yang diinginkan, atau pilih 'Liat Lagi' untuk cari sesuatu yang lain.",
+          `Tampilkan merk lain? ${addressName(session)} boleh ketik nama merk yang diinginkan, atau pilih 'Liat Lagi' untuk cari sesuatu yang lain.`,
         );
       }
 
       await facebookAPI.sendTextMessage(
         senderId,
-        "Masih ada lagi yg bella bisa bantu juragan?",
+        `Masih ada lagi yg bella bisa bantu, ${addressName(session)}?`,
         quickReplies,
       );
     }
@@ -341,9 +385,14 @@ async function showBanProducts(senderId, session) {
     session.banSearchQuery = null;
     await facebookAPI.sendTextMessage(
       senderId,
-      "Maaf, ada error saat menampilkan produk 😔\n\nKetik ulang ukuran ban atau tipe motor yang juragan cari.",
+      `Maaf, ada error saat menampilkan produk 😔\n\nKetik ulang ukuran ban atau tipe motor yang ${addressName(session)} cari.`,
     );
   }
 }
 
-module.exports = { askForRingSize, showBanProducts };
+module.exports = {
+  askForRingSize,
+  showBanProducts,
+  askForTubelessType,
+  handleUkuranReady,
+};

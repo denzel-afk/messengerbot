@@ -24,6 +24,7 @@ class SheetsService {
         ukuran: ["UKURAN"],
         brand: ["MERK"],
         pattern: ["PATTERN"],
+        type_ban: ["TYPE BAN", "TIPE BAN"],
         harga_jual: ["HARGA JUAL"],
         harga_pasang: ["HARGA PASANG"],
         price_list: ["PRICE LIST"],
@@ -260,6 +261,7 @@ class SheetsService {
     const ukuran = this.getCellValue(row, columnMap.ukuran);
     const merk = this.getCellValue(row, columnMap.brand);
     const pattern = this.getCellValue(row, columnMap.pattern);
+    const typeBan = this.getCellValue(row, columnMap.type_ban);
     const hargaJual = this.getNumericValue(row, columnMap.harga_jual);
     const hargaPasang = this.getNumericValue(row, columnMap.harga_pasang);
     const gambar = this.getCellValue(row, columnMap.image);
@@ -273,6 +275,7 @@ class SheetsService {
       ukuran,
       brand: merk,
       pattern: pattern || "",
+      type_ban: typeBan || "",
       harga_jual: hargaJual,
       harga_pasang: hargaPasang,
       base_price: hargaJual,

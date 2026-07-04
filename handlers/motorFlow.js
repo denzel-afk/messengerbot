@@ -1,6 +1,7 @@
 const gptService = require("../services/gptService");
 const facebookAPI = require("../services/facebookAPI");
 const { encodeUkuranForPayload } = require("../utils/banSizeParser");
+const { addressName } = require("../utils/helpers");
 
 async function showMotorRecommendations(senderId, session) {
   const motorType = session.motorType;
@@ -19,7 +20,10 @@ async function showMotorRecommendations(senderId, session) {
       throw new Error("No standard motor recommendation returned");
     }
 
-    const text = `🏍️ Rekomendasi ban ${position} untuk ${motorType}:\n\nUkuran standar: ${standardSize}\n\nApakah ini ukuran yang juragan mau atau juragan ada ukuran lain?`;
+    session.recommendedStandardSize = standardSize;
+
+    const addr = addressName(session);
+    const text = `🏍️ Rekomendasi ban ${position} untuk ${motorType}:\n\nUkuran standar: ${standardSize}\n\nApakah ini ukuran yang ${addr} mau atau ${addr} ada ukuran lain?`;
     const quickReplies = [
       {
         content_type: "text",
