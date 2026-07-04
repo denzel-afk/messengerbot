@@ -135,7 +135,10 @@ function matchBanProducts(allBanProducts, session) {
 // make, so skip straight to the products. Reuse the answer if the ukuran
 // hasn't changed since it was last asked (e.g. switching brand/page).
 async function handleUkuranReady(senderId, session) {
-  if (session.banTubeless && session.banTubelessForUkuran === session.banUkuran) {
+  if (
+    session.banTubeless &&
+    session.banTubelessForUkuran === session.banUkuran
+  ) {
     session.state = "show_products";
     await showBanProducts(senderId, session);
     return;
@@ -243,9 +246,7 @@ async function showBanProducts(senderId, session) {
 
     const MAX_CAROUSEL_ITEMS = 10;
     session.currentPage = session.currentPage || 1;
-    session.totalPages = Math.ceil(
-      matchedProducts.length / MAX_CAROUSEL_ITEMS,
-    );
+    session.totalPages = Math.ceil(matchedProducts.length / MAX_CAROUSEL_ITEMS);
 
     const startIdx = (session.currentPage - 1) * MAX_CAROUSEL_ITEMS;
     const endIdx = startIdx + MAX_CAROUSEL_ITEMS;
@@ -294,7 +295,7 @@ async function showBanProducts(senderId, session) {
 
     await facebookAPI.sendTextMessage(
       senderId,
-      `🛒 Untuk ketersediaan barang klik link di bawah ini:\n📞 WhatsApp: ${getWhatsAppLink()}\n\nLangsung gas aja ${addressName(session)} ke 88Motor, klik link untuk share lokasi:\n📍 https://maps.app.goo.gl/tKmS8ZuXCbhLvcZN6?g_st=ac`,
+      `🛒 Untuk ketersediaan barang klik link di bawah ini:\n📞 WhatsApp: ${getWhatsAppLink()}\n\nLangsung gas aja ${addressName(session)} ke 88Motor, klik link untuk ke lokasi:\n📍 https://maps.app.goo.gl/tKmS8ZuXCbhLvcZN6?g_st=ac`,
     );
 
     if (session.motorType) {
