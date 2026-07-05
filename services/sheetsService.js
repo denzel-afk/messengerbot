@@ -429,14 +429,13 @@ class SheetsService {
     return parseInt(String(value).replace(/[^\d]/g, "")) || 0;
   }
 
-  // Returns null when STOK is blank or unrecognized (stray typos like ".",
-  // "*", "i" shouldn't be read as zero), a number otherwise.
+  // STOK signs used in the sheet: blank = ok/show, "KOSONG" = no stock, and
+  // any other mark ("*", "i", etc.) = still has stock, show. A literal
+  // numeric 0 also means no stock; other numbers show as normal.
   parseStokValue(raw) {
     const s = String(raw || "").trim();
     if (s === "") return null;
-
-    const emptyWords = ["kosong", "habis", "abis", "sold out", "nol"];
-    if (emptyWords.includes(s.toLowerCase())) return 0;
+    if (s.toLowerCase() === "kosong") return 0;
 
     const match = s.match(/\d+/);
     return match ? parseInt(match[0], 10) : null;
