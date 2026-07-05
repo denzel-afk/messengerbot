@@ -1375,13 +1375,12 @@ class MessageHandler {
   }
 
   async sendFinishMessage(senderId, session) {
-    const finishText = `Terima kasih sudah menggunakan layanan Bella, ${addressName(session)}! 😊
+    const finishText = `Terima kasih sudah menghubungi 88 Motor, ${addressName(session)}.
 
-Untuk order atau info lebih lanjut, klik link:
-📞 ${this.getWhatsAppLink()}
-📍 **Alamat:** https://maps.app.goo.gl/DCjy76XTXcPyKWdH9
+Kalau mau tanya ukuran ban, tipe ban, atau rekomendasi ban yang cocok buat motor kamu, jangan sungkan chat Bella lagi ya.
 
-Sampai jumpa lagi, ${addressName(session)}! 👋`;
+Cari ban motor? Ingat 88 Motor.
+Terima kasih ${addressName(session)} 😁😁😁`;
 
     await this.sendTextMessage(senderId, finishText);
   }

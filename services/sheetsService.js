@@ -25,8 +25,9 @@ class SheetsService {
         brand: ["MERK"],
         pattern: ["PATTERN"],
         type_ban: ["TYPE BAN", "TIPE BAN"],
+        stok: ["STOK", "STOCK"],
         harga_jual: ["HARGA JUAL"],
-        harga_pasang: ["HARGA PASANG"],
+        harga_pasang: ["HARGA PASANG", "PASANG"],
         price_list: ["PRICE LIST"],
         image: ["GAMBAR"],
         het_baru: ["HET BARU"],
@@ -262,11 +263,18 @@ class SheetsService {
     const merk = this.getCellValue(row, columnMap.brand);
     const pattern = this.getCellValue(row, columnMap.pattern);
     const typeBan = this.getCellValue(row, columnMap.type_ban);
+    const stokRaw = this.getCellValue(row, columnMap.stok);
     const hargaJual = this.getNumericValue(row, columnMap.harga_jual);
     const hargaPasang = this.getNumericValue(row, columnMap.harga_pasang);
     const gambar = this.getCellValue(row, columnMap.image);
 
     if (!ukuran || !merk) return null;
+
+    // Blank or unrecognized STOK (stray characters, typos) means "not
+    // tracked yet" — still show it. Only an explicit 0, or a word meaning
+    // empty/sold out, hides the product.
+    const stok = this.parseStokValue(stokRaw);
+    if (stok === 0) return null;
 
     return {
       id: `${categoryName}_${index + 1}`,
@@ -276,6 +284,7 @@ class SheetsService {
       brand: merk,
       pattern: pattern || "",
       type_ban: typeBan || "",
+      stok,
       harga_jual: hargaJual,
       harga_pasang: hargaPasang,
       base_price: hargaJual,
@@ -418,6 +427,19 @@ class SheetsService {
     const value = this.getCellValue(row, keys);
     if (!value) return 0;
     return parseInt(String(value).replace(/[^\d]/g, "")) || 0;
+  }
+
+  // Returns null when STOK is blank or unrecognized (stray typos like ".",
+  // "*", "i" shouldn't be read as zero), a number otherwise.
+  parseStokValue(raw) {
+    const s = String(raw || "").trim();
+    if (s === "") return null;
+
+    const emptyWords = ["kosong", "habis", "abis", "sold out", "nol"];
+    if (emptyWords.includes(s.toLowerCase())) return 0;
+
+    const match = s.match(/\d+/);
+    return match ? parseInt(match[0], 10) : null;
   }
 
   convertGoogleDriveUrl(url) {
