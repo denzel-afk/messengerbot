@@ -6,6 +6,7 @@ const {
   showBanProducts,
   askForTubelessType,
   handleUkuranReady,
+  tryDirectBanAnswer,
 } = require("./banFlow");
 const { showMotorRecommendations } = require("./motorFlow");
 const {
@@ -138,6 +139,17 @@ class MessageHandler {
         `Halo ${addressName(session)}, ada yg bisa Bella bantu?`,
       );
       return;
+    }
+
+    // ========== DIRECT "BRAND + EXACT SIZE" LOOKUP ==========
+    // If the user already names both a brand and a specific size in one
+    // message, skip the guided flow and answer with photo + price directly.
+    try {
+      if (await tryDirectBanAnswer(senderId, session, rawText)) {
+        return;
+      }
+    } catch (error) {
+      console.error("Error in direct brand+size lookup:", error);
     }
 
     // If user was asked to provide manual size, process it here

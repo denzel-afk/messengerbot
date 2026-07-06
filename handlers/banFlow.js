@@ -2,11 +2,74 @@ const sheetsService = require("../services/sheetsService");
 const facebookAPI = require("../services/facebookAPI");
 const gptService = require("../services/gptService");
 const { addressName, matchesTubelessType } = require("../utils/helpers");
+const { looksLikeCompleteBanSize, normalizeBanSize } = require("../utils/banSizeParser");
 
 function getWhatsAppLink() {
   const number = process.env.SUPPORT_WHATSAPP || "081273574202";
   const intl = number.startsWith("0") ? "62" + number.substring(1) : number;
   return `https://wa.me/${intl}`;
+}
+
+// If the user already names both a specific brand and a specific size in
+// one message (e.g. "Corsa 80/90-14"), skip the guided flow entirely and
+// answer immediately with the product's photo + price. Returns true if it
+// handled the message.
+async function tryDirectBanAnswer(senderId, session, rawText) {
+  let size = null;
+  if (looksLikeCompleteBanSize(rawText)) {
+    size = normalizeBanSize(rawText);
+  } else {
+    const sizeMatch = rawText.match(/\d{2,3}\s*\/\s*\d{2,3}\s*-\s*\d{2}/);
+    if (sizeMatch) size = normalizeBanSize(sizeMatch[0]);
+  }
+  if (!size) return false;
+
+  const sameSizeProducts = await sheetsService.getProductsByUkuranBan(size);
+  if (sameSizeProducts.length === 0) return false;
+
+  const textLower = rawText.toLowerCase();
+  const knownBrands = [
+    ...new Set(
+      sameSizeProducts.map((p) => String(p.brand || "").toLowerCase().trim()),
+    ),
+  ].filter(Boolean);
+  const matchedBrand = knownBrands.find((b) => textLower.includes(b));
+  if (!matchedBrand) return false;
+
+  const matches = sameSizeProducts.filter(
+    (p) => String(p.brand || "").toLowerCase().trim() === matchedBrand,
+  );
+  if (matches.length === 0) return false;
+
+  await facebookAPI.sendTypingOn(senderId);
+
+  const elements = matches.slice(0, 10).map((product) => {
+    const price = product.harga_pasang ? product.harga_pasang * 1000 : null;
+    return {
+      title: product.name,
+      subtitle: `${product.brand}\n${product.specifications}${product.type_ban ? " - " + product.type_ban : ""}${price ? `\nHarga Pasang: Rp ${price.toLocaleString("id-ID")}` : ""}`,
+      image_url:
+        product.image_url ||
+        "https://via.placeholder.com/300x300.png?text=Ban",
+    };
+  });
+
+  await facebookAPI.sendCarousel(senderId, elements);
+  await facebookAPI.sendTextMessage(
+    senderId,
+    `🛒 Untuk ketersediaan barang klik link di bawah ini:\n📞 WhatsApp: ${getWhatsAppLink()}\n\nLangsung gas aja ${addressName(session)}, ke 88Motor, klik link untuk share lokasi:\n📍 https://maps.app.goo.gl/tKmS8ZuXCbhLvcZN6?g_st=ac`,
+  );
+  await facebookAPI.sendTextMessage(
+    senderId,
+    `Masih ada lagi yg bella bisa bantu, ${addressName(session)}?`,
+    [
+      { content_type: "text", title: "🔍 Liat Lagi", payload: "LIAT_LAGI" },
+      { content_type: "text", title: "✅ Selesai", payload: "SELESAI" },
+    ],
+  );
+
+  session.state = "after_price_check";
+  return true;
 }
 
 async function askForRingSize(senderId, session) {
@@ -413,4 +476,5 @@ module.exports = {
   showBanProducts,
   askForTubelessType,
   handleUkuranReady,
+  tryDirectBanAnswer,
 };
